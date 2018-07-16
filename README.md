@@ -1,1 +1,2 @@
-# point-understanding3
+Authors: Gilad Katz & William Hinthorn
+
