@@ -162,11 +162,16 @@ class PascalVOCSegmentation(data.Dataset):
         # print(img_path, annotation_path)
 
         _img = Image.open(img_path).convert('RGB')
+        print("[#](pacal_voc.py)(1) DEBUG: in pascal_voc.py")
+        print("[#](pascal_voc.py)(2) DEBUG: img_path = %s" % img_path)
 
         # TODO: maybe can be done in a better way
         _semantic_target = Image.open(annotation_path)
+        print("[#](pascal_voc.py)(3) DEBUG: annotation_path = %s" % annotation_path)
 
         imid = os.path.splitext(os.path.split(img_path)[-1])[0]
+        print("[#](pascal_voc.py)(4) DEBUG: imid = %s" % imid)
+        
 
         point_annotations = self.point_annotations[imid] if imid in self.point_annotations else {
         }

@@ -133,12 +133,15 @@ class OPSegNet(nn.Module):
         self.objpart_branch_conv1 = nn.Conv2d(self.inplanes, num_classes_objpart, 1)
 
         # Randomly initialize the 1x1 Conv scoring layer
-        _normal_initialization(self.fc)
+        _normal_initialization(self.semseg_branch_conv1)
+        _normal_initialization(self.objpart_branch_conv1)
 
         self.num_classes = num_classes
     
         upsample = UpsamplingBilinearlySpoof(step_size)
         self.decode = upsample
+ 
+        self.flat_map = None     # GILAD - used in order to keep code structre as it is
 
     def forward(self, x):
         '''

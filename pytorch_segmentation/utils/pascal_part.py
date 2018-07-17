@@ -55,7 +55,7 @@ def get_valid_circle_indices(arr, center, r):
     return eyes, jays
 
 
-def get_point_mask(point_annotations, mask_type, size, smooth=False, anno_params):
+def get_point_mask(point_annotations, mask_type, size, anno_params, smooth=False):
     """
     anno_params (dict): {parm:val} --> holds params needed for building the right mask according to the task
     anno_mode: 'binary' --> each annotated point gets a value of 0-1 (object or part)
@@ -141,10 +141,10 @@ def get_point_mask(point_annotations, mask_type, size, smooth=False, anno_params
     
     if anno_params['anno_mode'] == 'binary':
         # convert the mask to a binary mask (0 - object, 1 - part)
-        part_idxs = [anno_params['part_vals_range'][0] <= point_mask < anno_params['part_vals_range'][1]]
-        object_idxs = [anno_params['object_vals_range'][0] <= point_mask < anno_params['object_vals_range'][1]]
+        part_idxs = [(anno_params['part_vals_range'][0] <= point_mask) & (point_mask < anno_params['part_vals_range'][1])]
+        object_idxs = [(anno_params['object_vals_range'][0] <= point_mask) & (point_mask < anno_params['object_vals_range'][1])]
         point_mask[part_idxs] = anno_params['part_val_in_mask']
-        point_mask[objects_idxs] = anno_params['object_val_in_mask']
+        point_mask[object_idxs] = anno_params['object_val_in_mask']
 
     return point_mask  # , weights
 

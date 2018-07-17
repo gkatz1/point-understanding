@@ -275,7 +275,6 @@ def compress_objpart_logits(logits, anno, op_map):
             new_label = 1
         return new_label, pair
     
-    if model_type
     indices = []
     new_anno = []
     for _, label in enumerate(anno):
@@ -337,6 +336,7 @@ def validate_batch(
         overall_part_confusion_matrix,
         overall_semantic_confusion_matrix,
         labels,
+        model_type,
         op_map,
         writer=None,
         index=0):
@@ -365,7 +365,7 @@ def validate_batch(
     #     objpart_logits, objpart_anno)
         
     if model_type == '21_way_semseg_2_way_objpart':     # GILAD
-        objpart_prediction_np, objpart_prediction_np = numpyify_logits_and_annotations(
+        objpart_prediction_np, objpart_anno_np = numpyify_logits_and_annotations(
                 objpart_logits, objpart_anno)
         no_parts = []
     else:
@@ -583,6 +583,7 @@ def get_network_and_optimizer(
     else:
         start_epoch = 0
         best_semantic_val_score, best_objpart_val_score = 0.0, 0.0
+        best_objpart_accuracy = float("inf")	# GILAD
     fcn.cuda()
     fcn.train()
 

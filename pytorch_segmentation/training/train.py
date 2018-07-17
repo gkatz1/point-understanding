@@ -7,17 +7,18 @@
 # flake8: noqa = E402
 # pylint: disable = fixme,wrong-import-position,unused-import,import-error,too-many-statements,too-many-locals,
 # pylint: disable = invalid-name, len-as-condition, too-many-branches
-
 import sys
 import os
 import argparse
 import datetime
 import tqdm
+
+import tensorboardX
 import torch
 import torch.autograd
 from torch.autograd import Variable
 
-import tensorboardX
+# import tensorboardX
 
 # from PIL import Image
 import numpy as np
@@ -29,7 +30,7 @@ PATH = os.path.dirname(os.path.realpath(__file__))
 PATHARR = PATH.split(os.sep)
 print(PATHARR)
 HOME_DIR = os.path.join(
-    '/', *PATHARR[:PATHARR.index('obj_part_segmentation') + 1])
+    '/', *PATHARR[:PATHARR.index('point-understanding') + 1])
 DATASET_DIR = os.path.join(HOME_DIR, 'datasets')
 sys.path.insert(0, HOME_DIR)
 
@@ -65,7 +66,7 @@ def main(args):
     '''
     main(): Primary function to manage the training.
     '''
-
+    print("[#](1) In main")
     print(args)
     # *************************************
     architecture = args.arch
@@ -88,7 +89,7 @@ def main(args):
     _start_epoch = args.origin_epoch
     _load_folder = args.load_folder
     model_type = args.model_type
-    number_of_objpart_classes = args.number_of_objpart_classes
+    number_of_objpart_classes = args.num_objpart_classes
 
     # **************************************
     time_now = datetime.datetime.now().strftime("%Y_%m_%d_%H_%M")
@@ -149,6 +150,7 @@ def main(args):
         num_workers, mask_type, merge_level)
     
     # GILAD
+    number_of_classes = 21
     # number_of_classes = 1  # 1 for background...
     # print(network_dims)
     # for k in network_dims:
@@ -332,6 +334,7 @@ def train(train_params):
     objpart_criterion = train_params['objpart_criterion']
     number_of_classes = train_params['number_of_classes']
     number_of_semantic_classes = train_params['number_of_semantic_classes']
+    number_of_objpart_classes = train_params['number_of_objpart_classes']
     save_model_folder = train_params['save_model_folder']
     save_model_name = train_params['save_model_name']
     model_type = train_params['model_type']
@@ -370,6 +373,11 @@ def train(train_params):
                     trainloader, 0), total=number_training_batches):
             # img, semantic_anno, objpart_anno, objpart_weights=data
             img, semantic_anno, objpart_anno = data
+            # DEBUG
+            objpart_anno_0s_idxs = np.nonzero(objpart_anno == 0)
+            objpart_anno_1s_idxs = np.nonzero(objpart_anno == 1)
+            print("[#](1.7) DEBUG: 1s idxs in objpart_anno: {} 0s idxs: {}".format(
+                    objpart_anno_1s_idxs, objpart_anno_0s_idxs))
             batch_size = img.size(0)
 
             if sz is None:
@@ -399,6 +407,9 @@ def train(train_params):
 
             # forward + backward + optimize
             objpart_logits, semantic_logits = net(img)
+            print("[#](1.8) DEBUG: objpart_logits, semantic_logits")
+            print(objpart_logits.size())
+            print(semantic_logits.size())
             # import pdb; pdb.set_trace()
 
             op_log_flt_vld = get_valid_logits(
@@ -413,7 +424,7 @@ def train(train_params):
             # Score the overall accuracy
             # prepend _ to avoid interference with the training
             if model_type == '21_way_semseg_2_way_objpart':
-                _op_log_flt_vld = objpart_logits
+                _op_log_flt_vld = op_log_flt_vld
                 _op_anno_flt_vld = op_anno_flt_vld
             else:
                 _op_log_flt_vld, _op_anno_flt_vld = compress_objpart_logits(
@@ -422,9 +433,24 @@ def train(train_params):
             if len(_op_log_flt_vld) > 0:
                 _, logits_toscore = torch.max(_op_log_flt_vld, dim=1)
                 _ind_ = torch.gt(_op_anno_flt_vld, 0)
+                # print("[#](2) DEBUG: logits_toscore, _ind_")
+                # print(logits_toscore.size())
+                # print(_ind_.size())
+                # print(logits_toscore)
+                # print(_ind_)
                 op_pred_gz = logits_toscore[_ind_]
                 _op_anno_gz = _op_anno_flt_vld[_ind_]
-                correct_points += float((op_pred_gz == _op_anno_gz).sum())
+                # print("[#](3) DEBUG: op_pred_gz, _op_anno_gz")              
+                # print(op_pred_gz)
+                # print(type(op_pred_gz[0]))
+                # print(op_pred_gz.size())
+                # print(_op_anno_gz)
+                # print(type(_op_anno_gz[0]))
+                # print(_op_anno_gz.size())
+                # print(torch.sum(op_pred_gz == _op_anno_gz))
+                # correct_points += float(torch.sum(op_pred_gz == _op_anno_gz))
+                correct_points += torch.sum(op_pred_gz == _op_anno_gz).float().data[0]
+                print("[#](4) DEBUG: correct_points = {}".format(correct_points))
                 num_points += len(_op_anno_gz)
 
                 # Balance the weights
@@ -486,7 +512,7 @@ def train(train_params):
                     (objpart_logits, objpart_anno),
                     (semantic_logits, semantic_anno),
                     overall_part_conf_mat, overall_sem_conf_mat,
-                    (objpart_labels, semantic_labels), net.flat_map,
+                    (objpart_labels, semantic_labels), model_type, net.flat_map,
                     writer,
                     number_training_batches * epoch + i)
                 ((objpart_mPrec, objpart_mRec),
@@ -565,6 +591,7 @@ def train(train_params):
 
 if __name__ == "__main__":
     # TODO: move parameters from hard_coded in fn to command_line variables
+    print("[#](-1) DEBUG")
 
     parser = argparse.ArgumentParser(
         description='Hyperparameters for training.')
@@ -611,8 +638,8 @@ if __name__ == "__main__":
         "or just for a binary obj/part task (for each class)."
         "Legal values are 'binary', 'merged', and 'sparse'")
     parser.add_argument('--load-folder', type=str, default='experiments')
-    parsr.add('-mt', '--model_type', type=str, default='21_way_semseg_2_way_objpart', help="model's type")
-    parsr.add('-nop', '--num_objpart_classes', type=int, default=2, help="how many object/part's head outputs")
+    parser.add_argument('-mt', '--model_type', type=str, default='21_way_semseg_2_way_objpart', help="model's type")
+    parser.add_argument('-nop', '--num_objpart_classes', type=int, default=2, help="how many object/part's head outputs")
 
 
     argvals = parser.parse_args()
