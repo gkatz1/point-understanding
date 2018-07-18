@@ -146,10 +146,10 @@ class PascalVOCSegmentation(data.Dataset):
         self.point_mask_anno_params = {}
         if anno_mode == 'binary':
             self.point_mask_anno_params['anno_mode'] = 'binary'
-            self.point_mask_anno_params['part_vals_range'] = (0, 21)  # inclusive, exclusive
-            self.point_mask_anno_params['object_vals_range'] = (21, 41)   # invlusice, exclusive
-            self.point_mask_anno_params['part_val_in_mask'] = _OBJECT_VAL_IN_MASK
-            self.point_mask_anno_params['object_val_in_mask'] = _PART_VAL_IN_MASK
+            self.point_mask_anno_params['object_vals_range'] = (0, 21)  # inclusive, exclusive
+            self.point_mask_anno_params['part_vals_range'] = (21, 41)   # invlusice, exclusive
+            self.point_mask_anno_params['object_val_in_mask'] = _OBJECT_VAL_IN_MASK
+            self.point_mask_anno_params['part_val_in_mask'] = _PART_VAL_IN_MASK
 
 
     def __len__(self):
@@ -163,14 +163,14 @@ class PascalVOCSegmentation(data.Dataset):
 
         _img = Image.open(img_path).convert('RGB')
         print("[#](pacal_voc.py)(1) DEBUG: in pascal_voc.py")
-        print("[#](pascal_voc.py)(2) DEBUG: img_path = %s" % img_path)
+        # print("[#](pascal_voc.py)(2) DEBUG: img_path = %s" % img_path)
 
         # TODO: maybe can be done in a better way
         _semantic_target = Image.open(annotation_path)
-        print("[#](pascal_voc.py)(3) DEBUG: annotation_path = %s" % annotation_path)
+        # print("[#](pascal_voc.py)(3) DEBUG: annotation_path = %s" % annotation_path)
 
         imid = os.path.splitext(os.path.split(img_path)[-1])[0]
-        print("[#](pascal_voc.py)(4) DEBUG: imid = %s" % imid)
+        print("imid = %s" % imid)
         
 
         point_annotations = self.point_annotations[imid] if imid in self.point_annotations else {

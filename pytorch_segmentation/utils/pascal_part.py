@@ -67,11 +67,13 @@ def get_point_mask(point_annotations, mask_type, size, anno_params, smooth=False
     # weights = np.zeros(size, np.float32)
     if not point_annotations:
         return point_mask  # , weights
-
+    
+    print("[#] DEBUG, in pascal_part")
     # mode: Each annotation is the mode
     # of all responses
     if mask_type == 0:
         for point, answers in point_annotations.items():
+            print("{} = {}\n".format(point, answers))     # DEBUG
             coords = point.split("_")
             i, j = int(coords[1]), int(coords[0])
             _answers = np.array([ans for ans in answers if ans >= 0])
@@ -145,6 +147,7 @@ def get_point_mask(point_annotations, mask_type, size, anno_params, smooth=False
         object_idxs = [(anno_params['object_vals_range'][0] <= point_mask) & (point_mask < anno_params['object_vals_range'][1])]
         point_mask[part_idxs] = anno_params['part_val_in_mask']
         point_mask[object_idxs] = anno_params['object_val_in_mask']
+	print("part_idxs = {}\n object_idxs = {}".format(np.nonzero(point_mask == 1), np.nonzero(point_mask == 0)))
 
     return point_mask  # , weights
 

@@ -118,7 +118,10 @@ def main(args):
         HOME_DIR,
         'pytorch_segmentation',
         'training',
-        'experiments')
+        'experiments', save_model_name)
+    if not os.path.isdir(save_model_folder):
+        os.makedirs(save_model_folder)
+
     load_model_path = os.path.join(
         HOME_DIR, 'pytorch_segmentation', 'training', _load_folder)
     if load_model_name is not None:
@@ -210,7 +213,7 @@ def main(args):
     if validate_first:
         print("=> Validating network")
         sc1, sc2, sc3 = validate(
-            net, valset_loader, (objpart_labels, semantic_labels))
+            net, valset_loader, (objpart_labels, semantic_labels), model_type)
         print("{}\t{}\t{}".format(sc1, sc2, sc3))
 
     print("=> Entering training function")
@@ -219,7 +222,7 @@ def main(args):
     writer.close()
 
 
-def validate(net, loader, labels):
+def validate(net, loader, labels, model_type):
     ''' Computes mIoU for``net`` over the a set.
         args::
             :param ``net``: network (in this case resnet34_8s_dilated
@@ -249,6 +252,8 @@ def validate(net, loader, labels):
             tqdm.tqdm(loader)):
         image = Variable(image.cuda())
         objpart_logits, semantic_logits = net(image)
+        
+        print("[#] DEBUG: train.py, validate()")
 
         # First we do argmax on gpu and then transfer it to cpu
         sem_pred_np, sem_anno_np = numpyify_logits_and_annotations(
@@ -256,17 +261,28 @@ def validate(net, loader, labels):
         # objpart_pred_np, objpart_anno_np = numpyify_logits_and_annotations(
         #     objpart_logits, objpart_anno)
         if model_type == '21_way_semseg_2_way_objpart':     # GILAD
-            objpart_prediction_np, objpart_prediction_np = numpyify_logits_and_annotations(
+            objpart_pred_np, objpart_anno_np = numpyify_logits_and_annotations(
                     objpart_logits, objpart_anno)
         else:
             objpart_pred_np, objpart_anno_np = outputs_tonp_gt(
                 objpart_logits, objpart_anno, net.flat_map)
-        
-        opprednonz = np.array([el for el in objpart_pred_np if el > 0])
-        opannononz = np.array([el for el in objpart_anno_np if el > 0])
-        gt_right += (opprednonz == opannononz).sum()
-        gt_total += len(opannononz)
-
+        print("objpart_pred_np = {}, objpart_anno_np = {}".format(objpart_pred_np,
+                objpart_anno_np))
+        print("objpart_pred_np: #1s = {}, #0s = {}".format(np.sum(objpart_pred_np == 1),
+                np.sum(objpart_pred_np == 0)))
+        print("objpart_anno_np: #1s = {}, #0s = {}".format(np.sum(objpart_anno_np == 1),
+                np.sum(objpart_anno_np == 0)))
+        # opprednonz = np.array([el for el in objpart_pred_np if el > -1])
+        # opannononz = np.array([el for el in objpart_anno_np if el > -1])
+        # print("opprednonz = {}, opannononz = {}".format(opprednonz, opannononz))
+        # gt_right += np.sum((opprednonz == opannononz))
+        gt_right += np.sum(objpart_pred_np == objpart_anno_np)
+        gt_total += np.sum(objpart_anno_np != -1)	# TBC (-1 --> mask_out value)
+        print("gt_right = {}, get_total = {}".format(gt_right, gt_total))
+        correct_idxs = np.nonzero(objpart_pred_np == objpart_anno_np)
+	print("correct idxs = {}".format(correct_idxs))
+        print("pred[correct_idxs] = {}, annot[correct_idxs] = {}".format(
+                objpart_pred_np[correct_idxs], objpart_anno_np[correct_idxs]))
         current_semantic_confusion_matrix = confusion_matrix(
             y_true=sem_anno_np, y_pred=sem_pred_np, labels=semantic_labels)
 
@@ -357,6 +373,7 @@ def train(train_params):
             epochs_to_train))
     sz = None
     number_training_batches = len(trainloader)
+    print("#training batches = %d" % number_training_batches)
     for epoch in tqdm.tqdm(range(start_epoch, start_epoch + epochs_to_train)):
         # semantic_running_loss = 0.0
         # objpart_running_loss = 0.0
@@ -371,6 +388,9 @@ def train(train_params):
         for i, data in tqdm.tqdm(
                 enumerate(
                     trainloader, 0), total=number_training_batches):
+            print("[+] step %d" % i)
+            # if i == 5:   # for TESTING validate() func
+            #     break
             # img, semantic_anno, objpart_anno, objpart_weights=data
             img, semantic_anno, objpart_anno = data
             # DEBUG
@@ -432,14 +452,16 @@ def train(train_params):
 
             if len(_op_log_flt_vld) > 0:
                 _, logits_toscore = torch.max(_op_log_flt_vld, dim=1)
-                _ind_ = torch.gt(_op_anno_flt_vld, 0)
+                # _ind_ = torch.gt(_op_anno_flt_vld, 0)    # GILAD
+  
                 # print("[#](2) DEBUG: logits_toscore, _ind_")
                 # print(logits_toscore.size())
                 # print(_ind_.size())
                 # print(logits_toscore)
                 # print(_ind_)
-                op_pred_gz = logits_toscore[_ind_]
-                _op_anno_gz = _op_anno_flt_vld[_ind_]
+                # op_pred_gz = logits_toscore[_ind_]
+                # _op_anno_gz = _op_anno_flt_vld[_ind_]
+
                 # print("[#](3) DEBUG: op_pred_gz, _op_anno_gz")              
                 # print(op_pred_gz)
                 # print(type(op_pred_gz[0]))
@@ -449,12 +471,16 @@ def train(train_params):
                 # print(_op_anno_gz.size())
                 # print(torch.sum(op_pred_gz == _op_anno_gz))
                 # correct_points += float(torch.sum(op_pred_gz == _op_anno_gz))
-                correct_points += torch.sum(op_pred_gz == _op_anno_gz).float().data[0]
-                print("[#](4) DEBUG: correct_points = {}".format(correct_points))
-                num_points += len(_op_anno_gz)
+                correct_idxs = np.nonzero(logits_toscore.data == _op_anno_flt_vld.data)
+                this_correct_points = torch.sum(logits_toscore == _op_anno_flt_vld).float().data[0]
+                print("[train.py] correct idxs = {}".format(correct_idxs)) 
+                correct_points += this_correct_points
+                num_points += len(_op_anno_flt_vld)
 
                 # Balance the weights
-                this_num_points = float(len(_ind_))
+                this_num_points = len(_op_anno_flt_vld) # float(len(_ind_))   # GILAD
+                print("this_num_coorect_points = {}, this_num_points = {}, total_number_of_correct = {}, total_num_of_points = {}".format(
+                        this_correct_points, this_num_points, correct_points, num_points))
                 op_scale = Variable(torch.Tensor([this_num_points])).cuda() # _one_weight
                 # if num_points != 0:
                 #     multiplier = Variable(torch.Tensor(
@@ -546,7 +572,7 @@ def train(train_params):
         (curr_op_valscore,
          curr_sem_valscore,
          curr_op_gt_valscore) = validate(
-             net, valset_loader, (objpart_labels, semantic_labels))
+             net, valset_loader, (objpart_labels, semantic_labels), model_type)
         writer.add_scalar('validation/semantic_validation_score',
                           curr_sem_valscore, epoch)
         writer.add_scalar('validation/objpart_validation_score',
@@ -600,7 +626,7 @@ if __name__ == "__main__":
                         default=50,
                         help='Check training outputs every F batches.')
     parser.add_argument('-s', '--save-model-name', required=True,
-                        type=str, help='prefix for model checkpoing')
+                        type=str, help='prefix for model checkpoint')
     parser.add_argument('-l', '--load-model-name', default=None,
                         type=str, help="prefix for model checkpoint"
                         "to load")
