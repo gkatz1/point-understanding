@@ -12,6 +12,7 @@ import os
 import argparse
 import datetime
 import tqdm
+import csv
 
 import tensorboardX
 import torch
@@ -51,7 +52,6 @@ from pytorch_segmentation.evaluation import (
     get_network_and_optimizer)
 
 
-
 def str2bool(v):
     ''' Helper for command line args.
     '''
@@ -61,6 +61,26 @@ def str2bool(v):
         return False
     else:
         raise argparse.ArgumentTypeError('Boolean value expected.')
+
+
+def make_dump(dump_dir, dump_filename, var_dict):
+    if not os.path.isdir(dump_dir):
+        os.makedirs(dump_dir)
+    full_path = os.path.join(dump_dir, dump_filename)
+    cur_path = full_path
+    i = 1
+    while True:
+        if os.path.isfile(cur_path):
+            cur_path = full_path + "({})".format(i)
+            i += 1
+            continue
+        break
+    file_path = cur_path + '.csv'
+    with open(file_path, 'wb') as f:
+        writer = csv.writer(f, delimiter=':')
+        for k, v in var_dict.items():
+            writer.writerow([k, v])
+
 
 def main(args):
     '''
@@ -74,6 +94,8 @@ def main(args):
     batch_size = args.batch_size
     validate_first = args.validate_first
     save_model_name = args.save_model_name
+    if save_model_name == 'dbg':
+        pass   # Make it dbg_x (where x is the minumin unsed number for dbg_x)
     load_model_name = args.load_model_name
     num_workers = args.num_workers
     which_vis_type = args.paint_images
@@ -88,16 +110,18 @@ def main(args):
     validate_batch_frequency = args.validate_batch_frequency
     _start_epoch = args.origin_epoch
     _load_folder = args.load_folder
-    model_type = args.model_type
+    # model_type = args.model_type
+    num_branches = args.num_branches
     number_of_objpart_classes = args.num_objpart_classes
-
+    segmentation_only = args.segmentation_only
+    dump_dir = args.dump_dir
     # **************************************
     time_now = datetime.datetime.now().strftime("%Y_%m_%d_%H_%M")
 
     # Define training parameters
     # edit below
     # *******************************************************
-    experiment_name = experiment_name + time_now  # "drn_objpart_" + time_now
+    experiment_name = experiment_name + '_' + time_now  # "drn_objpart_" + time_now
     # architecture = ['resnet', 'drn', 'vgg', 'hourglass'][0]
     init_lr = 0.0016  # 2.5e-4
     # batch_size = 12  # 8
@@ -108,7 +132,7 @@ def main(args):
     semantic_labels = range(number_of_semantic_classes)
     objpart_labels = range(number_of_objpart_classes)
     #  validate_first = False
-    #  output_predicted_images = False
+    output_predicted_images = True    # GILAD
     # which_vis_type = ['None' ,'objpart', 'semantic', 'separated'][0]
     if which_vis_type is None or which_vis_type == 'None':
         output_predicted_images = False
@@ -138,6 +162,11 @@ def main(args):
     # validate_batch_frequency = 20  # compute mIoU every k batches
     # End define training parameters
     # **********************************************************
+
+    #make_dump(save_model_name, )  
+    # print("locals:") 
+    # print(locals())
+    make_dump(dump_dir, save_model_name, locals())
 
     print("Setting visible GPUS to machine {}".format(device))
 
@@ -192,15 +221,18 @@ def main(args):
         'number_of_objpart_classes' : number_of_objpart_classes,    # GILAD
         'save_model_name': save_model_name,
         'save_model_folder': save_model_folder,
-        'model_type' : model_type
+        'num_branches' : num_branches,
+        'which_vis_type' : which_vis_type,
+        'segmentation_only' : segmentation_only,
     })
 
-    # op_map = net.flat_map     # GILAD
+    op_map = net.flat_map     # GILAD
 
     if output_predicted_images:
         print("=> Outputting predicted images to folder 'predictions'")
-        validate_and_output_images(     # GILAD - for now, no change - we will go for the 'semantic' option
-            net, valset_loader, op_map, which=which_vis_type, alpha=0.7)
+        validate_and_output_images(  
+            net, valset_loader, op_map, which=which_vis_type, alpha=0.7, writer=writer,
+             step_num=0, save_name=save_model_name)
         while True:
             resp = input("=> Done. Do you wish to continue training? (y/n):\t")
             if resp[0] == 'n':
@@ -209,11 +241,14 @@ def main(args):
                 break
             else:
                 print("{} not understood".format(resp))
+     
+    # if visulize_first:	# GILAD
+    #     validate_and_output_images(net, valset_loader, None)
 
     if validate_first:
         print("=> Validating network")
         sc1, sc2, sc3 = validate(
-            net, valset_loader, (objpart_labels, semantic_labels), model_type)
+            net, valset_loader, (objpart_labels, semantic_labels), num_branches)
         print("{}\t{}\t{}".format(sc1, sc2, sc3))
 
     print("=> Entering training function")
@@ -222,7 +257,7 @@ def main(args):
     writer.close()
 
 
-def validate(net, loader, labels, model_type):
+def validate(net, loader, labels, num_branches):
     ''' Computes mIoU for``net`` over the a set.
         args::
             :param ``net``: network (in this case resnet34_8s_dilated
@@ -235,7 +270,7 @@ def validate(net, loader, labels, model_type):
     net.eval()
     # hardcoded in for the object-part infernce
     # TODO: change to be flexible/architecture-dependent
-    if model_type == '21_way_semseg_2_way_objpart':     # GILAD
+    if num_branches == 2:     # GILAD
         no_parts = []
     else:
         no_parts = [0, 4, 9, 11, 18, 20, 24, 29, 31, 38, 40]
@@ -260,7 +295,7 @@ def validate(net, loader, labels, model_type):
             semantic_logits, semantic_anno)
         # objpart_pred_np, objpart_anno_np = numpyify_logits_and_annotations(
         #     objpart_logits, objpart_anno)
-        if model_type == '21_way_semseg_2_way_objpart':     # GILAD
+        if num_branches == 2:     # GILAD
             objpart_pred_np, objpart_anno_np = numpyify_logits_and_annotations(
                     objpart_logits, objpart_anno)
         else:
@@ -353,11 +388,13 @@ def train(train_params):
     number_of_objpart_classes = train_params['number_of_objpart_classes']
     save_model_folder = train_params['save_model_folder']
     save_model_name = train_params['save_model_name']
-    model_type = train_params['model_type']
+    num_branches = train_params['num_branches']
+    which_vis_type = train_params['which_vis_type']
+    segmentation_only = train_params['segmentation_only']
     # could try to learn these as parameters...
     # currently not implemented
-    objpart_weight = Variable(torch.Tensor([1])).cuda()
-    semantic_weight = Variable(torch.Tensor([1])).cuda()
+    objpart_weight = Variable(torch.Tensor([0.2])).cuda()
+    semantic_weight = Variable(torch.Tensor([0.8])).cuda()
     _one_weight = Variable(torch.Tensor([1])).cuda()
 
     objpart_labels = range(number_of_objpart_classes)   # GILAD
@@ -396,8 +433,8 @@ def train(train_params):
             # DEBUG
             objpart_anno_0s_idxs = np.nonzero(objpart_anno == 0)
             objpart_anno_1s_idxs = np.nonzero(objpart_anno == 1)
-            print("[#](1.7) DEBUG: 1s idxs in objpart_anno: {} 0s idxs: {}".format(
-                    objpart_anno_1s_idxs, objpart_anno_0s_idxs))
+            # print("[#](1.7) DEBUG: 1s idxs in objpart_anno: {} 0s idxs: {}".format(
+            #         objpart_anno_1s_idxs, objpart_anno_0s_idxs))
             batch_size = img.size(0)
 
             if sz is None:
@@ -427,9 +464,9 @@ def train(train_params):
 
             # forward + backward + optimize
             objpart_logits, semantic_logits = net(img)
-            print("[#](1.8) DEBUG: objpart_logits, semantic_logits")
-            print(objpart_logits.size())
-            print(semantic_logits.size())
+            # print("[#](1.8) DEBUG: objpart_logits, semantic_logits")
+            # print(objpart_logits.size())
+            # print(semantic_logits.size())
             # import pdb; pdb.set_trace()
 
             op_log_flt_vld = get_valid_logits(
@@ -443,7 +480,7 @@ def train(train_params):
 
             # Score the overall accuracy
             # prepend _ to avoid interference with the training
-            if model_type == '21_way_semseg_2_way_objpart':
+            if num_branches == 2:
                 _op_log_flt_vld = op_log_flt_vld
                 _op_anno_flt_vld = op_anno_flt_vld
             else:
@@ -473,7 +510,7 @@ def train(train_params):
                 # correct_points += float(torch.sum(op_pred_gz == _op_anno_gz))
                 correct_idxs = np.nonzero(logits_toscore.data == _op_anno_flt_vld.data)
                 this_correct_points = torch.sum(logits_toscore == _op_anno_flt_vld).float().data[0]
-                print("[train.py] correct idxs = {}".format(correct_idxs)) 
+                # print("[train.py] correct idxs = {}".format(correct_idxs))   # DEBUG 
                 correct_points += this_correct_points
                 num_points += len(_op_anno_flt_vld)
 
@@ -512,8 +549,12 @@ def train(train_params):
             # Consider modulating the weighting of the losses?
             semantic_batch_weight = semantic_weight
             objpart_batch_weight = objpart_weight
-            loss = semantic_loss * semantic_batch_weight + \
-            objpart_loss * objpart_batch_weight
+            if segmentation_only:
+                print("segmentation loss only!")
+                loss = semantic_loss
+            else:
+                loss = semantic_loss * semantic_batch_weight + \
+                objpart_loss * objpart_batch_weight
 
             if batch_average:
                 loss = loss / batch_size
@@ -538,7 +579,7 @@ def train(train_params):
                     (objpart_logits, objpart_anno),
                     (semantic_logits, semantic_anno),
                     overall_part_conf_mat, overall_sem_conf_mat,
-                    (objpart_labels, semantic_labels), model_type, net.flat_map,
+                    (objpart_labels, semantic_labels), num_branches, net.flat_map,
                     writer,
                     number_training_batches * epoch + i)
                 ((objpart_mPrec, objpart_mRec),
@@ -572,13 +613,20 @@ def train(train_params):
         (curr_op_valscore,
          curr_sem_valscore,
          curr_op_gt_valscore) = validate(
-             net, valset_loader, (objpart_labels, semantic_labels), model_type)
+             net, valset_loader, (objpart_labels, semantic_labels), num_branches)
         writer.add_scalar('validation/semantic_validation_score',
                           curr_sem_valscore, epoch)
         writer.add_scalar('validation/objpart_validation_score',
                           curr_op_valscore, epoch)
         writer.add_scalar('validation/overall_objpart_validation_score',
                           curr_op_valscore, epoch)
+        
+        # visualize
+        # TODO: move this call to the validate() function
+        validate_and_output_images(net, valset_loader, net.flat_map,
+                which=which_vis_type, alpha=0.7, writer=writer, step_num=epoch + 1,
+                save_name=save_model_name)
+
         is_best = False
         if curr_op_gt_valscore > best_op_gt_valscore:
             best_op_gt_valscore = curr_op_gt_valscore
@@ -664,8 +712,15 @@ if __name__ == "__main__":
         "or just for a binary obj/part task (for each class)."
         "Legal values are 'binary', 'merged', and 'sparse'")
     parser.add_argument('--load-folder', type=str, default='experiments')
-    parser.add_argument('-mt', '--model_type', type=str, default='21_way_semseg_2_way_objpart', help="model's type")
-    parser.add_argument('-nop', '--num_objpart_classes', type=int, default=2, help="how many object/part's head outputs")
+    parser.add_argument('-nb', '--num_branches', type=int, 
+        default=2, help="number of branches (output heads) for the network" \
+        "[1-way or 2-way]")
+    parser.add_argument('-nop', '--num-objpart-classes', type=int, 
+        default=2, help="# object/part's head outputs")
+    parser.add_argument('-so', '--segmentation-only', type=str2bool, default=False,
+        help="Weather or not to run semantic-segmentation only model")
+    parser.add_argument('-dd', '--dump-dir', type=str, default='dumps/',
+        help="dump's directory path")
 
 
     argvals = parser.parse_args()

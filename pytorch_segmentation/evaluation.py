@@ -336,7 +336,7 @@ def validate_batch(
         overall_part_confusion_matrix,
         overall_semantic_confusion_matrix,
         labels,
-        model_type,
+        num_branches,
         op_map,
         writer=None,
         index=0):
@@ -364,7 +364,7 @@ def validate_batch(
     # objpart_prediction_np, objpart_anno_np = numpyify_logits_and_annotations(
     #     objpart_logits, objpart_anno)
         
-    if model_type == '21_way_semseg_2_way_objpart':     # GILAD
+    if num_branches == 2:     # GILAD
         objpart_prediction_np, objpart_anno_np = numpyify_logits_and_annotations(
                 objpart_logits, objpart_anno)
         no_parts = []
@@ -525,7 +525,7 @@ def load_checkpoint(load_path, fcn, optimizer):
         # optim_state_dict[k_] = checkpoint['optimizer'][k]
         # fcn.load_state_dict(checkpoint['state_dict'])
 
-        fcn.load_state_dict(state_dict, strict=False)
+        fcn.load_state_dict(state_dict) # , strict=False)
         if optimizer is not None:
             try:
                 optimizer.load_state_dict(checkpoint['optimizer'])
@@ -618,7 +618,8 @@ def get_cmap():
 
 
 def validate_and_output_images(net, loader, op_map,
-                               which='semantic', alpha=0.6):
+                               which='semantic', alpha=0.6, writer=None,
+                               step_num=0, save_name='output_images'):
     ''' Computes mIoU for``net`` over the a set.
         args:: :param ``net``: network (in this case resnet34_8s_dilated
             :param ``loader``: dataloader (in this case, validation set loader)
@@ -668,6 +669,9 @@ def validate_and_output_images(net, loader, op_map,
       40: "tvmonitor_part"
 
     '''
+    if which is None or which == 'None':
+        which = 'semantic'
+
     from PIL import Image
     net.eval()
     # hardcoded in for the object-part infernce
@@ -701,8 +705,10 @@ def validate_and_output_images(net, loader, op_map,
                 '"which" value of {} not valid. Must be one of "semantic",'
                 '"separated", or'
                 '"objpart"'.format(which))
-
-        image_copy = np.array(image).squeeze(0).transpose(1, 2, 0)
+        print("[evaluation.py, 704] squeezed image shape = {}".format(
+                image.numpy().squeeze(0).shape))
+        
+        image_copy = image.numpy().squeeze(0).transpose(1, 2, 0)
         image_copy = image_copy.astype(np.float32)
         image_copy -= image_copy.min()
         image_copy /= image_copy.max()
@@ -725,8 +731,19 @@ def validate_and_output_images(net, loader, op_map,
         image_copy = image_copy / np.max(image_copy)
         image_copy = image_copy * 255
         image_copy = image_copy.astype(np.uint8)
+        print("image_copy.shape = {}".format(image_copy.shape))
+        image_copy_torch_tensor = image_copy.transpose(2, 0, 1)
+        image_copy_torch_tensor = torch.from_numpy(image_copy)
+       
+        if writer is not None:
+            writer.add_image('images/image_{}'.format(i), image_copy, step_num)
+        
+        base_path = "predictions/" 
         image_copy = Image.fromarray(image_copy)
-        image_copy.save("predictions/validation_{}_{}.png".format(which, i))
+        if not os.path.isdir("{}{}/".format(base_path, save_name)):
+            os.makedirs("{}{}/".format(base_path, save_name))
+
+        image_copy.save("{}{}/validation_{}_{}.png".format(base_path, save_name, which, i))
         i += 1
         image_copy.close()
         # hxwx(rgb)
