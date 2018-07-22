@@ -63,7 +63,7 @@ def get_point_mask(point_annotations, mask_type, size, anno_params, smooth=False
     """
     
     # Ignore all non-placed points
-    point_mask = np.zeros(size[:2], np.int32) - 1
+    point_mask = np.zeros(size[:2], np.int32) - 2   # (-2) - mask out value # TBC- make it an argument
     # weights = np.zeros(size, np.float32)
     if not point_annotations:
         return point_mask  # , weights
@@ -73,21 +73,28 @@ def get_point_mask(point_annotations, mask_type, size, anno_params, smooth=False
     # of all responses
     if mask_type == 0:
         for point, answers in point_annotations.items():
-            print("{} = {}\n".format(point, answers))     # DEBUG
+            # print("{} = {}\n".format(point, answers))     # DEBUG
             coords = point.split("_")
             i, j = int(coords[1]), int(coords[0])
-            _answers = np.array([ans for ans in answers if ans >= 0])
+            if anno_params['anno_mode'] == 'trinary':
+                print("[#] [utils/pascal_part.py] trinary mode")    # DEBUG
+                # (ans + 1) --> for the scenario we want amiguous (-1) as a label
+                _answers = np.array([(ans + 1) for ans in answers if ans >= -1])
+            else:
+                _answers = np.array([ans for ans in answers if ans >= 0])
             if _answers.size == 0:
                 continue
             ans_counts = np.bincount(np.array(_answers))
             modes = np.argwhere(ans_counts == np.amax(ans_counts)).flatten()
-            # Choose most common non-ambiguous choice
+            # Choose most common non-ambiguous (or including amibuous as a label) choice
             # Currently randomly breaks ties.
             # TODO: Develop better logic
             # modes.sort()
             if len(modes) != 1:
                 continue
             # np.random.shuffle(modes)
+            if anno_params['anno_mode'] == 'trinary':
+                modes[0] -= 1   # back to original values (after +1)
             if smooth:
                 inds = get_valid_circle_indices(point_mask, (i, j), 3)
                 point_mask[inds] = modes[0]
@@ -106,7 +113,11 @@ def get_point_mask(point_annotations, mask_type, size, anno_params, smooth=False
         for point, answers in point_annotations.items():
             coords = point.split("_")
             i, j = int(coords[1]), int(coords[0])
-            _answers = np.array([ans for ans in answers if ans >= 0])
+            if anno_params['anno_mode'] == 'trinary':
+                _answers = np.array([(ans+1) for ans in answers if ans >= -1])
+            else:
+                _answers = np.array([ans for ans in answers if ans >= 0])
+
             # Not all responses agree. OR none
             if len(set(_answers)) != 1:
                 continue
@@ -120,6 +131,10 @@ def get_point_mask(point_annotations, mask_type, size, anno_params, smooth=False
             modes = [m for m in modes if m >= 0]
             if len(modes) != 1:
                 continue
+            
+            if anno_params['anno_mode'] == 'trinary':
+                modes[0] -= 1
+
             if smooth:
                 inds = get_valid_circle_indices(point_mask, (i, j), 3)
                 point_mask[inds] = modes[0]
@@ -143,11 +158,23 @@ def get_point_mask(point_annotations, mask_type, size, anno_params, smooth=False
     
     if anno_params['anno_mode'] == 'binary':
         # convert the mask to a binary mask (0 - object, 1 - part)
-        part_idxs = [(anno_params['part_vals_range'][0] <= point_mask) & (point_mask < anno_params['part_vals_range'][1])]
-        object_idxs = [(anno_params['object_vals_range'][0] <= point_mask) & (point_mask < anno_params['object_vals_range'][1])]
+        part_idxs = [(anno_params['part_vals_range'][0] <= point_mask) &
+            (point_mask < anno_params['part_vals_range'][1])]
+        object_idxs = [(anno_params['object_vals_range'][0] <= point_mask) &
+            (point_mask < anno_params['object_vals_range'][1])]
+        ambiguous_idxs = [(anno_params['ambiguous_vals_range'][0] <= point_mask) & 
+            (point_mask < anno_params['ambiguous_vals_range'][1])]
         point_mask[part_idxs] = anno_params['part_val_in_mask']
         point_mask[object_idxs] = anno_params['object_val_in_mask']
-	print("part_idxs = {}\n object_idxs = {}".format(np.nonzero(point_mask == 1), np.nonzero(point_mask == 0)))
+        point_mask[ambiguous_idxs] = anno_params['ambiguous_val_in_mask']
+        
+        # DEBUG
+        print("part_val = {}, object_val = {}, ambiguous_val = {}".format(
+            anno_params['part_val_in_mask'],
+            anno_params['object_val_in_mask'], anno_params['ambiguous_val_in_mask']))
+	print("part_idxs = {}\nobject_idxs = {}\nambiguous_idxs = {}".format(
+            np.nonzero(point_mask == 1),
+            np.nonzero(point_mask == 0), np.nonzero(point_mask == 2)))      # DEBUG
 
     return point_mask  # , weights
 

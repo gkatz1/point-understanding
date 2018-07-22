@@ -196,6 +196,7 @@ def main(args):
     net, optimizer = get_network_and_optimizer(
         architecture,
         network_dims,
+        number_of_objpart_classes,
         load_model_name is not None, load_model_path, train_params, init_lr)
     try:
         train_params['best_op_val_score'] = train_params['best_objpart_val_score']
@@ -307,12 +308,12 @@ def validate(net, loader, labels, num_branches):
                 np.sum(objpart_pred_np == 0)))
         print("objpart_anno_np: #1s = {}, #0s = {}".format(np.sum(objpart_anno_np == 1),
                 np.sum(objpart_anno_np == 0)))
-        # opprednonz = np.array([el for el in objpart_pred_np if el > -1])
-        # opannononz = np.array([el for el in objpart_anno_np if el > -1])
+        # opprednonz = np.array([el for el in objpart_pred_np if el > -2])
+        # opannononz = np.array([el for el in objpart_anno_np if el > -2])
         # print("opprednonz = {}, opannononz = {}".format(opprednonz, opannononz))
         # gt_right += np.sum((opprednonz == opannononz))
         gt_right += np.sum(objpart_pred_np == objpart_anno_np)
-        gt_total += np.sum(objpart_anno_np != -1)	# TBC (-1 --> mask_out value)
+        gt_total += np.sum(objpart_anno_np != -2)	# TBC (-2 --> mask_out value)
         print("gt_right = {}, get_total = {}".format(gt_right, gt_total))
         correct_idxs = np.nonzero(objpart_pred_np == objpart_anno_np)
 	print("correct idxs = {}".format(correct_idxs))
@@ -446,7 +447,7 @@ def train(train_params):
             semantic_anno_flatten_valid, semantic_index = get_valid_annos(
                 semantic_anno, 255)
             op_anno_flt_vld, objpart_index = get_valid_annos(
-                objpart_anno, -1)
+                objpart_anno, -2)
 
             # wrap them in Variable
             # the index can be acquired on the gpu
@@ -468,7 +469,7 @@ def train(train_params):
             # print(objpart_logits.size())
             # print(semantic_logits.size())
             # import pdb; pdb.set_trace()
-
+            print("[#] [train.py] (train) number_of_objpart_classes = {}".format(number_of_objpart_classes))
             op_log_flt_vld = get_valid_logits(
                 objpart_logits, objpart_index, number_of_objpart_classes)
             semantic_logits_flatten_valid = get_valid_logits(
@@ -516,8 +517,9 @@ def train(train_params):
 
                 # Balance the weights
                 this_num_points = len(_op_anno_flt_vld) # float(len(_ind_))   # GILAD
-                print("this_num_coorect_points = {}, this_num_points = {}, total_number_of_correct = {}, total_num_of_points = {}".format(
-                        this_correct_points, this_num_points, correct_points, num_points))
+                print("""this_num_coorect_points = {}, this_num_points = {}, total_number_of_correct = {},  
+                      total_num_of_points = {}""".format(this_correct_points,
+                      this_num_points, correct_points, num_points))
                 op_scale = Variable(torch.Tensor([this_num_points])).cuda() # _one_weight
                 # if num_points != 0:
                 #     multiplier = Variable(torch.Tensor(

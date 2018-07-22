@@ -546,6 +546,7 @@ def load_checkpoint(load_path, fcn, optimizer):
 def get_network_and_optimizer(
         arch,
         network_dims,
+        num_classes_objpart,
         load_from_local=False,
         model_path=None,
         train_params=None,
@@ -566,10 +567,11 @@ def get_network_and_optimizer(
         TODO: make this flexible. This is really sloppy.
 
     '''
-
+    print("[#] [evaluation.py] num_classes_objpart = {}".format(num_classes_objpart))
     fcn = objpart_net.OPSegNet(
         arch=arch,
         output_dims=network_dims,
+        num_classes_objpart=num_classes_objpart,
         pretrained=False)
     # fcn = resnet_dilated.Resnet34_8s(
     #     output_dims=network_dims,

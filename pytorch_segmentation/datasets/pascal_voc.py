@@ -17,6 +17,7 @@ from ..utils.pascal_part import get_pascal_object_part_points, get_point_mask
 _MASKTYPE = {'mode': 0, 'consensus': 1, 'weighted': 2}
 _OBJECT_VAL_IN_MASK = 0
 _PART_VAL_IN_MASK = 1
+_AMBIGUOUS_VAL_IN_MASK = 2
 
 # flake8: noqa=E501
 # pylint: disable=too-many-instance-attributes, too-few-public-methods, fixme
@@ -144,12 +145,14 @@ class PascalVOCSegmentation(data.Dataset):
 
         # params needed for building part-object annotation mask
         self.point_mask_anno_params = {}
-        if anno_mode == 'binary':
-            self.point_mask_anno_params['anno_mode'] = 'binary'
+        if anno_mode == 'binary' or anno_mode == 'trinary':
+            self.point_mask_anno_params['anno_mode'] = anno_mode
+            self.point_mask_anno_params['ambiguous_vals_range'] = (-1, 0)
             self.point_mask_anno_params['object_vals_range'] = (0, 21)  # inclusive, exclusive
             self.point_mask_anno_params['part_vals_range'] = (21, 41)   # invlusice, exclusive
             self.point_mask_anno_params['object_val_in_mask'] = _OBJECT_VAL_IN_MASK
             self.point_mask_anno_params['part_val_in_mask'] = _PART_VAL_IN_MASK
+            self.point_mask_anno_params['ambiguous_val_in_mask'] = _AMBIGUOUS_VAL_IN_MASK
 
 
     def __len__(self):
