@@ -92,7 +92,7 @@ class PascalVOCSegmentation(data.Dataset):
                  split_mode=2,
                  merge_mode="objpart",
                  mask_type="consensus",
-                 which='binary', anno_mode='binary'):
+                 which='binary'):
         ''' Returns label_attrs: a dictionary of the number of parts associated
         with each semantic part in the dataset. This is used for defining the
         output dimensions of the network.
@@ -102,8 +102,9 @@ class PascalVOCSegmentation(data.Dataset):
         assert mask_type in _MASKTYPE, "mask_type {} error. Must be one of {}".format(
             mask_type, list(_MASKTYPE))
 
-        assert which in ['binary', 'merged', 'sparse']
-        self.PASCAL_POINT_FILE_NAME = which + "_" + self.PASCAL_POINT_FILE_NAME
+        assert which in ['binary', 'trinary', 'merged', 'sparse']
+        # ATTENTION - Right now the 'binary_pascal_gt' is merged   # TBC
+        self.PASCAL_POINT_FILE_NAME = which + "_" + self.PASCAL_POINT_FILE_NAME 
         print("Collecting points from : {}".format(self.PASCAL_POINT_FILE_NAME))
 
         self.mask_type = _MASKTYPE[mask_type]
@@ -145,8 +146,8 @@ class PascalVOCSegmentation(data.Dataset):
 
         # params needed for building part-object annotation mask
         self.point_mask_anno_params = {}
-        if anno_mode == 'binary' or anno_mode == 'trinary':
-            self.point_mask_anno_params['anno_mode'] = anno_mode
+        if which == 'binary' or which == 'trinary':
+            self.point_mask_anno_params['anno_mode'] = which
             self.point_mask_anno_params['ambiguous_vals_range'] = (-1, 0)
             self.point_mask_anno_params['object_vals_range'] = (0, 21)  # inclusive, exclusive
             self.point_mask_anno_params['part_vals_range'] = (21, 41)   # invlusice, exclusive

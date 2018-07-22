@@ -102,7 +102,7 @@ def main(args):
     print(which_vis_type)
     assert which_vis_type in [None, 'None', 'objpart', 'semantic', 'separated']
     merge_level = args.part_grouping
-    assert merge_level in ['binary', 'sparse', 'merged']
+    assert merge_level in ['binary', 'trinary','sparse', 'merged']
     mask_type = args.mask_type
     assert mask_type in ['mode', 'consensus']
     device = args.device
@@ -112,7 +112,8 @@ def main(args):
     _load_folder = args.load_folder
     # model_type = args.model_type
     num_branches = args.num_branches
-    number_of_objpart_classes = args.num_objpart_classes
+    # number_of_objpart_classes = args.num_objpart_classes
+    number_of_objpart_classes = 3 if merge_level == 'trinary' else 2
     segmentation_only = args.segmentation_only
     dump_dir = args.dump_dir
     # **************************************
@@ -136,6 +137,8 @@ def main(args):
     # which_vis_type = ['None' ,'objpart', 'semantic', 'separated'][0]
     if which_vis_type is None or which_vis_type == 'None':
         output_predicted_images = False
+
+
     # merge_level = 'binary'  # 'merged', 'sparse'
     # save_model_name = "drn"  # 'resnet_34_8s'
     save_model_folder = os.path.join(
@@ -448,6 +451,10 @@ def train(train_params):
                 semantic_anno, 255)
             op_anno_flt_vld, objpart_index = get_valid_annos(
                 objpart_anno, -2)
+            print("~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~")
+            print("[#] [train.py] (train) #(-2)'s = {}, #(-1)'s = {} in objpart annotation".format(
+                torch.nonzero(objpart_anno == -2).size(), torch.nonzero(objpart_anno == -1).size()))
+            print("objpart_anno.shape = {}".format(objpart_anno.shape))
 
             # wrap them in Variable
             # the index can be acquired on the gpu
@@ -533,11 +540,12 @@ def train(train_params):
                 op_scale = objpart_weight
 
 
-            sem_scale = Variable(torch.FloatTensor(
-                [(semantic_anno_flatten_valid.data > 0).sum()])).cuda()
-            semantic_loss = semantic_criterion(
-                semantic_logits_flatten_valid, semantic_anno_flatten_valid)
-
+            # sem_scale = Variable(torch.FloatTensor(
+            #     [(semantic_anno_flatten_valid.data > 0).sum()])).cuda()
+            # semantic_loss = semantic_criterion(
+            #     semantic_logits_flatten_valid, semantic_anno_flatten_valid)
+            print("blah")
+            return
             # import pdb; pdb.set_trace()
             if spatial_average:
                 semantic_loss /= sem_scale
@@ -717,8 +725,8 @@ if __name__ == "__main__":
     parser.add_argument('-nb', '--num_branches', type=int, 
         default=2, help="number of branches (output heads) for the network" \
         "[1-way or 2-way]")
-    parser.add_argument('-nop', '--num-objpart-classes', type=int, 
-        default=2, help="# object/part's head outputs")
+    # parser.add_argument('-nop', '--num-objpart-classes', type=int, 
+    #     default=2, help="# object/part's head outputs")
     parser.add_argument('-so', '--segmentation-only', type=str2bool, default=False,
         help="Weather or not to run semantic-segmentation only model")
     parser.add_argument('-dd', '--dump-dir', type=str, default='dumps/',

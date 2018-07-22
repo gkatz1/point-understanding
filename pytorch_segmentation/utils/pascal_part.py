@@ -156,7 +156,7 @@ def get_point_mask(point_annotations, mask_type, size, anno_params, smooth=False
         raise NotImplementedError(
             "mask_type {} not implemented".format(mask_type))
     
-    if anno_params['anno_mode'] == 'binary':
+    if anno_params['anno_mode'] == 'binary' or anno_params['anno_mode'] == 'trinary':
         # convert the mask to a binary mask (0 - object, 1 - part)
         part_idxs = [(anno_params['part_vals_range'][0] <= point_mask) &
             (point_mask < anno_params['part_vals_range'][1])]
@@ -169,13 +169,14 @@ def get_point_mask(point_annotations, mask_type, size, anno_params, smooth=False
         point_mask[ambiguous_idxs] = anno_params['ambiguous_val_in_mask']
         
         # DEBUG
+        print("@@@@@@@@@@@@@@@@@@@@ ambiguous_range = ({}, {})".format(
+            anno_params['ambiguous_vals_range'][0], anno_params['ambiguous_vals_range'][1]))
         print("part_val = {}, object_val = {}, ambiguous_val = {}".format(
             anno_params['part_val_in_mask'],
             anno_params['object_val_in_mask'], anno_params['ambiguous_val_in_mask']))
 	print("part_idxs = {}\nobject_idxs = {}\nambiguous_idxs = {}".format(
             np.nonzero(point_mask == 1),
             np.nonzero(point_mask == 0), np.nonzero(point_mask == 2)))      # DEBUG
-
     return point_mask  # , weights
 
 

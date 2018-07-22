@@ -72,8 +72,9 @@ def get_training_loaders(dataset_dir, network_dims, batch_size=8,
             inwhich the Pascal VOC dataset is stored
             ... etc.
             :param ``mask_type``:
-            :param ``which``: one of 'binary,' 'merged', or 'sparse'
+            :param ``which``: one of 'binary,', 'trinary', 'merged', or 'sparse'
             'binary': for each class: object or part
+            'trinary': for each class: object, part or ambiguous
             'merged': for each class: object or one of k "super-parts"
             'sparse': for each calss: object or one of N parts
     '''
@@ -373,7 +374,7 @@ def validate_batch(
                 objpart_logits, objpart_anno, op_map)
         no_parts = [0, 4, 9, 11, 18, 20, 24, 29, 31, 38, 40]
         # Make sure to ignore all background class values
-        objpart_anno_np[objpart_anno_np == 0] = -1
+        objpart_anno_np[objpart_anno_np == 0] = -2
         # objpart_prediction_np[objpart_anno_np == 0] = -1
 
     # Mask-out value is ignored by default in the sklearn
