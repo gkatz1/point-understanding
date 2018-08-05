@@ -31,13 +31,15 @@ class OPSegNet(nn.Module):
     def __init__(self,
                  arch,
                  output_dims,
+                 num_classes_objpart=2,
                  upsample='bilinear',
                  pretrained=True):
-
+        
+        print("[#] [objpart_net.py] num_classes_objpart = {}".format(num_classes_objpart))
         print(arch)
         assert arch in ['drn', 'drn_54', 'resnet', 'vgg', 'hourglass']
         super(OPSegNet, self).__init__()
-
+ 
         # one dimension for each object and part (plus background)
         # to do: in order to train on other datasets, will need to
         # push the bg class to the point file
@@ -46,9 +48,9 @@ class OPSegNet(nn.Module):
         
         # TEMP
         # background + 20 classes + object or part
-        num_classes = 1 + 20 + 2        # TBC
         num_classes_semseg = 21
-        num_classes_objpart = 2
+        # num_classes_objpart = 2
+        num_classes = num_classes_semseg + num_classes_objpart        # TBC - to be flexible for both 1-head, 2-head net
         
         
         if arch == 'resnet':
