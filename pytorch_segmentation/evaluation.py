@@ -21,7 +21,6 @@ import torchvision.transforms
 # from .models import resnet_dilated
 # from .models import partsnet
 from .models import objpart_net
-from .models import resnet
 from .datasets.pascal_voc import PascalVOCSegmentation
 from .transforms import (ComposeJoint,
                          RandomHorizontalFlipJoint,
@@ -570,9 +569,6 @@ def get_network_and_optimizer(
 
     '''
     print("[#] [evaluation.py] num_classes_objpart = {}".format(num_classes_objpart))
-    if arch == 'resnet34_8s':
-        fcn = resnet.Resnet34_8s(objpart_num_classes=num_classes_objpart)
-    
     fcn = objpart_net.OPSegNet(
         arch=arch,
         output_dims=network_dims,
