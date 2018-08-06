@@ -153,6 +153,7 @@ class OPSegNet(nn.Module):
             x = [background, obj_1, obj_2, ..., parts_1, parts_2, ...]
             out = [background, obj_or_part_1, obj_or_part_2, , ...]
         '''
+        
         insize = x.size()[-2:]
         x, _ = self.net(x)    # extract features
         

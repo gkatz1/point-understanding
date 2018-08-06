@@ -187,3 +187,99 @@ def resnet152(pretrained=False, **kwargs):
     if pretrained:
         model.load_state_dict(model_zoo.load_url(model_urls['resnet152']))
     return model
+
+
+
+class Resnet34_8s(nn.Module):
+    
+    def __init__(self, fully_conv=True, pretrained=pretrained,
+                 step_size=step_size, semseg_num_classes=21, objpart_num_classes=2):
+        
+        super(Resnet34_8s, self).__init__()
+        
+        
+        # Load the pretrained weights, remove avg pool
+        # layer and get the output stride of 8
+        resnet34_32s = torchvision.models.resnet34(fully_conv=fully_conv,
+                                                   pretrained=pretrained,
+                                                   output_stride=step_size,
+                                                   remove_avg_pool_layer=True)
+            
+        resnet_block_expansion_rate = resnet34_32s.layer1[0].expansion
+
+        # Create a linear layer -- we don't need logits in this case
+        resnet34_32s.fc = nn.Sequential()
+
+        self.resnet34_32s = resnet34_32s
+
+        self.semseg_score_32s = nn.Conv2d(512 *  resnet_block_expansion_rate,
+                                         semseg_num_classes,
+                                         kernel_size=1)
+
+        self.objpart_score_32s = nn.Conv2d(512 *  resnet_block_expansion_rate,
+                                          objpart_num_classes,
+                                          kernel_size=1)
+
+        self.semseg_score_16s = nn.Conv2d(256 *  resnet_block_expansion_rate,
+                                         semseg_num_classes,
+                                         kernel_size=1)
+
+        self.objpart_score_16s = nn.Conv2d(256 *  resnet_block_expansion_rate,
+                                          objpart_num_classes,
+                                          kernel_size=1)
+
+        self.semseg_score_8s = nn.Conv2d(128 *  resnet_block_expansion_rate,
+                                        semseg_num_classes,
+                                        kernel_size=1)
+
+        self.objpart_score_8s = nn.Conv2d(128 *  resnet_block_expansion_rate,
+                                         objpart_num_classes,
+                                         kernel_size=1)
+
+    def forward(self, x):
+        
+        input_spatial_dim = x.size()[2:]
+        
+        x = self.resnet34_32s.conv1(x)
+            x = self.resnet34_32s.bn1(x)
+            x = self.resnet34_32s.relu(x)
+            x = self.resnet34_32s.maxpool(x)
+            
+            x = self.resnet34_32s.layer1(x)
+            
+            x = self.resnet34_32s.layer2(x)
+            semseg_logits_8s = self.semseg_score_8s(x)
+            objpart_logits_8s = self.objpart_score_8s(x)
+            
+            x = self.resnet34_32s.layer3(x)
+            semseg_logits_16s = self.semseg_score_16s(x)
+            objpart_logits_16s = self.objpart_score_16s(x)
+            
+            x = self.resnet34_32s.layer4(x)
+            semseg_logits_32s = self.semseg_score_32s(x)
+            objpart_logits_32s = self.objpart_score_32s(x)
+            
+            logits_16s_spatial_dim = logits_16s.size()[2:]
+            logits_8s_spatial_dim = logits_8s.size()[2:]
+            
+            semseg_logits_16s += nn.functional.upsample_bilinear(semseg_logits_32s,
+                                                                 size=logits_16s_spatial_dim)
+                
+            objpart_logits_16s += nn.functional.upsample_bilinear(objpart_logits_32s,
+                                                               size=logits_16s_spatial_dim)
+
+            semseg_logits_8s += nn.functional.upsample_bilinear(semseg_logits_16s,
+                                                             size=logits_8s_spatial_dim)
+
+            objpart_logits_8s += nn.functional.upsample_bilinear(objpart_logits_16s,
+                                                              size=logits_8s_spatial_dim)
+
+            semseg_logits_upsampled = nn.functional.upsample_bilinear(semseg_logits_8s,
+                                                                   size=input_spatial_dim)
+
+            objpart_logits_upsampled = nn.functional.upsample_bilinear(objpart_logits_8s,
+                                                                    size=input_spatial_dim)
+
+            return objpart_logits_upsampled, semseg_logits_upsampled
+
+
