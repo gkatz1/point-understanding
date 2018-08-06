@@ -14,7 +14,7 @@ from ..utils.pascal_voc import get_augmented_pascal_image_annotation_filename_pa
 from ..utils.pascal_voc import convert_pascal_berkeley_augmented_mat_annotations_to_png
 from ..utils.pascal_part import get_pascal_object_part_points, get_point_mask
 
-_MASKTYPE = {'mode': 0, 'consensus': 1, 'weighted': 2}
+_MASKTYPE = {'mode': 0, 'consensus': 1, 'weighted': 2, 'consensus_or_ambiguous': 3}
 _OBJECT_VAL_IN_MASK = 0
 _PART_VAL_IN_MASK = 1
 _AMBIGUOUS_VAL_IN_MASK = 2
