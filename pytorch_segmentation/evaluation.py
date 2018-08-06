@@ -85,7 +85,7 @@ def get_training_loaders(dataset_dir, network_dims, batch_size=8,
         [
             RandomHorizontalFlipJoint(),
             RandomCropJoint(crop_size=(insize, insize), pad_values=[
-                0, 255, -1]),
+                0, 255, -2]),
             [torchvision.transforms.ToTensor(), None, None],
             [torchvision.transforms.Normalize(
                 (0.485, 0.456, 0.406), (0.229, 0.224, 0.225)), None, None],

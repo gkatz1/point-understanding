@@ -70,8 +70,8 @@ def make_dump(dump_dir, dump_filename, var_dict):
     cur_path = full_path
     i = 1
     while True:
-        if os.path.isfile(cur_path):
-            cur_path = full_path + "({})".format(i)
+        if os.path.isfile(cur_path + '.csv'):
+            cur_path = full_path + "_v{}".format(i)
             i += 1
             continue
         break
@@ -104,7 +104,7 @@ def main(args):
     merge_level = args.part_grouping
     assert merge_level in ['binary', 'trinary','sparse', 'merged']
     mask_type = args.mask_type
-    assert mask_type in ['mode', 'consensus']
+    assert mask_type in ['mode', 'consensus', 'consensus_or_ambiguous']
     device = args.device
     epochs_to_train = args.epochs_to_train
     validate_batch_frequency = args.validate_batch_frequency
@@ -397,8 +397,8 @@ def train(train_params):
     segmentation_only = train_params['segmentation_only']
     # could try to learn these as parameters...
     # currently not implemented
-    objpart_weight = Variable(torch.Tensor([0.2])).cuda()
-    semantic_weight = Variable(torch.Tensor([0.8])).cuda()
+    objpart_weight = Variable(torch.Tensor([1])).cuda()
+    semantic_weight = Variable(torch.Tensor([1])).cuda()
     _one_weight = Variable(torch.Tensor([1])).cuda()
 
     objpart_labels = range(number_of_objpart_classes)   # GILAD
@@ -434,6 +434,8 @@ def train(train_params):
             #     break
             # img, semantic_anno, objpart_anno, objpart_weights=data
             img, semantic_anno, objpart_anno = data
+            # print("~~~~~ objpart_anno ~~~~~")
+            # print(objpart_anno)    # DEBUG
             # DEBUG
             objpart_anno_0s_idxs = np.nonzero(objpart_anno == 0)
             objpart_anno_1s_idxs = np.nonzero(objpart_anno == 1)
@@ -540,12 +542,11 @@ def train(train_params):
                 op_scale = objpart_weight
 
 
-            # sem_scale = Variable(torch.FloatTensor(
-            #     [(semantic_anno_flatten_valid.data > 0).sum()])).cuda()
-            # semantic_loss = semantic_criterion(
-            #     semantic_logits_flatten_valid, semantic_anno_flatten_valid)
-            print("blah")
-            return
+            sem_scale = Variable(torch.FloatTensor(
+                [(semantic_anno_flatten_valid.data > 0).sum()])).cuda()
+            semantic_loss = semantic_criterion(
+                semantic_logits_flatten_valid, semantic_anno_flatten_valid)
+
             # import pdb; pdb.set_trace()
             if spatial_average:
                 semantic_loss /= sem_scale
@@ -722,7 +723,7 @@ if __name__ == "__main__":
         "or just for a binary obj/part task (for each class)."
         "Legal values are 'binary', 'merged', and 'sparse'")
     parser.add_argument('--load-folder', type=str, default='experiments')
-    parser.add_argument('-nb', '--num_branches', type=int, 
+    parser.add_argument('-nb', '--num-branches', type=int, 
         default=2, help="number of branches (output heads) for the network" \
         "[1-way or 2-way]")
     # parser.add_argument('-nop', '--num-objpart-classes', type=int, 

@@ -95,6 +95,11 @@ def get_point_mask(point_annotations, mask_type, size, anno_params, smooth=False
             # np.random.shuffle(modes)
             if anno_params['anno_mode'] == 'trinary':
                 modes[0] -= 1   # back to original values (after +1)
+            # DEBUG
+            if modes[0] == -1:
+                with open("debug_ambiguous_var", 'wb') as f:
+                    f.write("ambiguous point! win\n")
+
             if smooth:
                 inds = get_valid_circle_indices(point_mask, (i, j), 3)
                 point_mask[inds] = modes[0]
@@ -151,6 +156,22 @@ def get_point_mask(point_annotations, mask_type, size, anno_params, smooth=False
     elif mask_type == 2:
         raise NotImplementedError(
             "mask_type 'weighted' ({}) not implemented".format(mask_type))
+    
+    # consensus or ambiguous
+    elif mask_type == 3:
+        for point, answers in point_annotations.items():
+            coords = point.split("_")
+            i, j = int(coords[1]), int(coords[0])
+            _answers = np.array([ans for ans in answers if ans >= -1], dtype=np.int64)
+
+            if _answers.size < 3:    # Using only points with at least 3 answers
+                continue
+ 
+            if np.all(_answers == _answers[0]):
+                print("+" * 100)
+                point_mask[i, j] = _answers[0]
+            else:
+                point_mask[i, j] = -1   # ambiguous # TBC - make ambiguous val an argument
 
     else:
         raise NotImplementedError(
@@ -177,6 +198,10 @@ def get_point_mask(point_annotations, mask_type, size, anno_params, smooth=False
 	print("part_idxs = {}\nobject_idxs = {}\nambiguous_idxs = {}".format(
             np.nonzero(point_mask == 1),
             np.nonzero(point_mask == 0), np.nonzero(point_mask == 2)))      # DEBUG
+
+    print("$$$$$ [utils/pacal_part.py] point_mask.shape =  {} $$$$$".format(
+        point_mask.shape))    # DEBUG
+
     return point_mask  # , weights
 
 
