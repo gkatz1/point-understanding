@@ -569,6 +569,9 @@ def get_network_and_optimizer(
 
     '''
     print("[#] [evaluation.py] num_classes_objpart = {}".format(num_classes_objpart))
+    if arch == 'resnet34_8s':
+        fcn = resnet.Resnet34_8s(objpart_num_classes=num_classes_objpart)
+    
     fcn = objpart_net.OPSegNet(
         arch=arch,
         output_dims=network_dims,
