@@ -1,12 +1,7 @@
-# import torchvision
-import math
 import torch.nn as nn
+import math
 import torch.utils.model_zoo as model_zoo
-from .resnet_layers import (
-        BasicBlock,
-        Bottleneck)
-
-# pylint: disable=too-many-instance-attributes
+import numpy as np
 
 
 __all__ = ['ResNet', 'resnet18', 'resnet34', 'resnet50', 'resnet101',
@@ -22,6 +17,101 @@ model_urls = {
 }
 
 
+def conv3x3(in_planes, out_planes, stride=1, dilation=1):
+    "3x3 convolution with padding"
+    
+    kernel_size = np.asarray((3, 3))
+    
+    # Compute the size of the upsampled filter with
+    # a specified dilation rate.
+    upsampled_kernel_size = (kernel_size - 1) * (dilation - 1) + kernel_size
+    
+    # Determine the padding that is necessary for full padding,
+    # meaning the output spatial size is equal to input spatial size
+    full_padding = (upsampled_kernel_size - 1) // 2
+    
+    # Conv2d doesn't accept numpy arrays as arguments
+    full_padding, kernel_size = tuple(full_padding), tuple(kernel_size)
+    
+    return nn.Conv2d(in_planes, out_planes, kernel_size=kernel_size, stride=stride,
+                     padding=full_padding, dilation=dilation, bias=False)
+
+
+class BasicBlock(nn.Module):
+    expansion = 1
+
+    def __init__(self, inplanes, planes, stride=1, downsample=None, dilation=1):
+        super(BasicBlock, self).__init__()
+        self.conv1 = conv3x3(inplanes, planes, stride, dilation=dilation)
+        self.bn1 = nn.BatchNorm2d(planes)
+        self.relu = nn.ReLU(inplace=True)
+        self.conv2 = conv3x3(planes, planes, dilation=dilation)
+        self.bn2 = nn.BatchNorm2d(planes)
+        self.downsample = downsample
+        self.stride = stride
+
+    def forward(self, x):
+        residual = x
+
+        out = self.conv1(x)
+        out = self.bn1(out)
+        out = self.relu(out)
+
+        out = self.conv2(out)
+        out = self.bn2(out)
+
+        if self.downsample is not None:
+            residual = self.downsample(x)
+
+        out += residual
+        out = self.relu(out)
+
+        return out
+
+
+class Bottleneck(nn.Module):
+    expansion = 4
+
+    def __init__(self, inplanes, planes, stride=1, downsample=None, dilation=1):
+        super(Bottleneck, self).__init__()
+        self.conv1 = nn.Conv2d(inplanes, planes, kernel_size=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(planes)
+        
+        self.conv2 = conv3x3(planes, planes, stride=stride, dilation=dilation)
+        
+        #self.conv2 = nn.Conv2d(planes, planes, kernel_size=3, stride=stride,
+        #                       padding=1, bias=False)
+        
+        self.bn2 = nn.BatchNorm2d(planes)
+        self.conv3 = nn.Conv2d(planes, planes * 4, kernel_size=1, bias=False)
+        self.bn3 = nn.BatchNorm2d(planes * 4)
+        self.relu = nn.ReLU(inplace=True)
+        self.downsample = downsample
+        self.stride = stride
+
+    def forward(self, x):
+        residual = x
+
+        out = self.conv1(x)
+        out = self.bn1(out)
+        out = self.relu(out)
+
+        out = self.conv2(out)
+        out = self.bn2(out)
+        out = self.relu(out)
+
+        out = self.conv3(out)
+        out = self.bn3(out)
+
+        if self.downsample is not None:
+            residual = self.downsample(x)
+
+        out += residual
+        out = self.relu(out)
+
+        return out
+
+
 class ResNet(nn.Module):
 
     def __init__(self,
@@ -30,19 +120,17 @@ class ResNet(nn.Module):
                  num_classes=1000,
                  fully_conv=False,
                  remove_avg_pool_layer=False,
-                 out_middle=False,
                  output_stride=32):
-
+        
         # Add additional variables to track
         # output stride. Necessary to achieve
         # specified output stride.
         self.output_stride = output_stride
         self.current_stride = 4
         self.current_dilation = 1
-        self.out_middle = out_middle
-
+        
         self.remove_avg_pool_layer = remove_avg_pool_layer
-
+        
         self.inplanes = 64
         self.fully_conv = fully_conv
         super(ResNet, self).__init__()
@@ -51,11 +139,21 @@ class ResNet(nn.Module):
         self.bn1 = nn.BatchNorm2d(64)
         self.relu = nn.ReLU(inplace=True)
         self.maxpool = nn.MaxPool2d(kernel_size=3, stride=2, padding=1)
-
+        
         self.layer1 = self._make_layer(block, 64, layers[0])
         self.layer2 = self._make_layer(block, 128, layers[1], stride=2)
         self.layer3 = self._make_layer(block, 256, layers[2], stride=2)
         self.layer4 = self._make_layer(block, 512, layers[3], stride=2)
+        
+        self.avgpool = nn.AvgPool2d(7)
+
+        self.fc = nn.Linear(512 * block.expansion, num_classes)
+        
+        if self.fully_conv:
+            self.avgpool = nn.AvgPool2d(7, padding=3, stride=1)
+            # In the latest unstable torch 4.0 the tensor.copy_
+            # method was changed and doesn't work as it used to be
+            #self.fc = nn.Conv2d(512 * block.expansion, num_classes, 1)
 
         for m in self.modules():
             if isinstance(m, nn.Conv2d):
@@ -67,22 +165,24 @@ class ResNet(nn.Module):
 
     def _make_layer(self, block, planes, blocks, stride=1, dilation=1):
         downsample = None
-
+         
         if stride != 1 or self.inplanes != planes * block.expansion:
-
+            
+            
             # Check if we already achieved desired output stride.
             if self.current_stride == self.output_stride:
-
+                
                 # If so, replace subsampling with a dilation to preserve
                 # current spatial resolution.
                 self.current_dilation = self.current_dilation * stride
                 stride = 1
             else:
-
+                
                 # If not, perform subsampling and update current
                 # new output stride.
                 self.current_stride = self.current_stride * stride
-
+                
+            
             # We don't dilate 1x1 convolution.
             downsample = nn.Sequential(
                 nn.Conv2d(self.inplanes, planes * block.expansion,
@@ -91,43 +191,33 @@ class ResNet(nn.Module):
             )
 
         layers = []
-        layers.append(
-            block(
-                self.inplanes,
-                planes,
-                stride,
-                downsample,
-                dilation=self.current_dilation))
+        layers.append(block(self.inplanes, planes, stride, downsample, dilation=self.current_dilation))
         self.inplanes = planes * block.expansion
         for i in range(1, blocks):
-            layers.append(
-                block(
-                    self.inplanes,
-                    planes,
-                    dilation=self.current_dilation))
+            layers.append(block(self.inplanes, planes, dilation=self.current_dilation))
 
         return nn.Sequential(*layers)
 
     def forward(self, x):
-        y = list()
         x = self.conv1(x)
         x = self.bn1(x)
         x = self.relu(x)
-        y.append(x)
         x = self.maxpool(x)
-        x = self.layer1(x)
-        y.append(x)
-        x = self.layer2(x)
-        y.append(x)
-        x = self.layer3(x)
-        y.append(x)
-        x = self.layer4(x)
-        y.append(x)
 
-        if self.out_middle:
-            return x, y
-        else:
-            return x
+        x = self.layer1(x)
+        x = self.layer2(x)
+        x = self.layer3(x)
+        x = self.layer4(x)
+        
+        if not self.remove_avg_pool_layer:
+            x = self.avgpool(x)
+        
+        if not self.fully_conv:
+            x = x.view(x.size(0), -1)
+            
+        x = self.fc(x)
+
+        return x
 
 
 def resnet18(pretrained=False, **kwargs):
@@ -190,22 +280,21 @@ def resnet152(pretrained=False, **kwargs):
     return model
 
 
-
 class Resnet34_8s(nn.Module):
-    
+
     def __init__(self, fully_conv=True, pretrained=True,
                  semseg_num_classes=21, objpart_num_classes=2):
-       
+
         super(Resnet34_8s, self).__init__()
-        
-        
+
+
         # Load the pretrained weights, remove avg pool
         # layer and get the output stride of 8
         resnet34_32s = resnet34(fully_conv=fully_conv,
                                                    pretrained=pretrained,
                                                    output_stride=32,
                                                    remove_avg_pool_layer=True)
-            
+
         resnet_block_expansion_rate = resnet34_32s.layer1[0].expansion
 
         # Create a linear layer -- we don't need logits in this case
@@ -237,43 +326,47 @@ class Resnet34_8s(nn.Module):
                                          objpart_num_classes,
                                          kernel_size=1)
 
+        self.flat_map = {}   # Just for not breaking the code
+  
     def forward(self, x):
-        
+
         input_spatial_dim = x.size()[2:]
-        
+
         x = self.resnet34_32s.conv1(x)
         x = self.resnet34_32s.bn1(x)
         x = self.resnet34_32s.relu(x)
         x = self.resnet34_32s.maxpool(x)
-            
+
         x = self.resnet34_32s.layer1(x)
-            
+
         x = self.resnet34_32s.layer2(x)
         semseg_logits_8s = self.semseg_score_8s(x)
         objpart_logits_8s = self.objpart_score_8s(x)
-            
+
         x = self.resnet34_32s.layer3(x)
         semseg_logits_16s = self.semseg_score_16s(x)
         objpart_logits_16s = self.objpart_score_16s(x)
-            
+
         x = self.resnet34_32s.layer4(x)
         semseg_logits_32s = self.semseg_score_32s(x)
         objpart_logits_32s = self.objpart_score_32s(x)
-            
-        logits_16s_spatial_dim = logits_16s.size()[2:]
-        logits_8s_spatial_dim = logits_8s.size()[2:]
-            
+
+        semseg_logits_16s_spatial_dim = semseg_logits_16s.size()[2:]
+        semseg_logits_8s_spatial_dim = semseg_logits_8s.size()[2:]
+        objpart_logits_16s_spatial_dim = objpart_logits_16s.size()[2:]
+        objpart_logits_8s_spatial_dim = objpart_logits_8s.size()[2:]
+
         semseg_logits_16s += nn.functional.upsample_bilinear(semseg_logits_32s,
-                                                             size=logits_16s_spatial_dim)
-                
+                                                             size=semseg_logits_16s_spatial_dim)
+
         objpart_logits_16s += nn.functional.upsample_bilinear(objpart_logits_32s,
-                                                           size=logits_16s_spatial_dim)
+                                                           size=objpart_logits_16s_spatial_dim)
 
         semseg_logits_8s += nn.functional.upsample_bilinear(semseg_logits_16s,
-                                                         size=logits_8s_spatial_dim)
+                                                         size=semseg_logits_8s_spatial_dim)
 
         objpart_logits_8s += nn.functional.upsample_bilinear(objpart_logits_16s,
-                                                          size=logits_8s_spatial_dim)
+                                                          size=objpart_logits_8s_spatial_dim)
 
         semseg_logits_upsampled = nn.functional.upsample_bilinear(semseg_logits_8s,
                                                            size=input_spatial_dim)

@@ -124,7 +124,8 @@ def main(args):
     # *******************************************************
     experiment_name = experiment_name + '_' + time_now  # "drn_objpart_" + time_now
     # architecture = ['resnet', 'drn', 'vgg', 'hourglass'][0]
-    init_lr = 0.0016  # 2.5e-4
+    # init_lr = 0.0016  # 2.5e-4
+    init_lr = 0.0001
     # batch_size = 12  # 8
     # num_workers = 4
     # number_of_classes = 41
