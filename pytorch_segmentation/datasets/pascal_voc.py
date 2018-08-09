@@ -14,7 +14,8 @@ from ..utils.pascal_voc import get_augmented_pascal_image_annotation_filename_pa
 from ..utils.pascal_voc import convert_pascal_berkeley_augmented_mat_annotations_to_png
 from ..utils.pascal_part import get_pascal_object_part_points, get_point_mask
 
-_MASKTYPE = {'mode': 0, 'consensus': 1, 'weighted': 2, 'consensus_or_ambiguous': 3}
+_MASKTYPE = {'mode': 0, 'consensus': 1, 'weighted': 2, 'consensus_or_ambiguous': 3,
+             '61-way': 4}
 _OBJECT_VAL_IN_MASK = 0
 _PART_VAL_IN_MASK = 1
 _AMBIGUOUS_VAL_IN_MASK = 2
@@ -130,7 +131,7 @@ class PascalVOCSegmentation(data.Dataset):
             self.pascal_full_root_folder_path, self.berkeley_full_root_folder_path, mode=split_mode)
 
         # GILAD
-        self.point_annotations = get_pascal_object_part_points(os.path.join(
+        self.point_annotations, label_attrs = get_pascal_object_part_points(os.path.join(
             self.root, self.PASCAL_POINT_FOLDER_NAME), self.PASCAL_POINT_FILE_NAME)
 
         if train:
@@ -142,19 +143,19 @@ class PascalVOCSegmentation(data.Dataset):
             #     for l in self.img_anno_pairs:
             #         f.write("{}\n".format(l))
 
-        # network_dims.update(label_attrs)  # GILAD
+        network_dims.update(label_attrs)  # GILAD
 
         # params needed for building part-object annotation mask
         self.point_mask_anno_params = {}
+        self.point_mask_anno_params['anno_mode'] = which
         if which == 'binary' or which == 'trinary':
-            self.point_mask_anno_params['anno_mode'] = which
             self.point_mask_anno_params['ambiguous_vals_range'] = (-1, 0)
             self.point_mask_anno_params['object_vals_range'] = (0, 21)  # inclusive, exclusive
             self.point_mask_anno_params['part_vals_range'] = (21, 41)   # invlusice, exclusive
             self.point_mask_anno_params['object_val_in_mask'] = _OBJECT_VAL_IN_MASK
             self.point_mask_anno_params['part_val_in_mask'] = _PART_VAL_IN_MASK
             self.point_mask_anno_params['ambiguous_val_in_mask'] = _AMBIGUOUS_VAL_IN_MASK
-
+ 
 
     def __len__(self):
 

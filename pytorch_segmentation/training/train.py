@@ -102,9 +102,9 @@ def main(args):
     print(which_vis_type)
     assert which_vis_type in [None, 'None', 'objpart', 'semantic', 'separated']
     merge_level = args.part_grouping
-    assert merge_level in ['binary', 'trinary','sparse', 'merged']
+    assert merge_level in ['binary', 'trinary','sparse', 'merged', '61-way']
     mask_type = args.mask_type
-    assert mask_type in ['mode', 'consensus', 'consensus_or_ambiguous']
+    assert mask_type in ['mode', 'consensus', 'consensus_or_ambiguous', '61-way']
     device = args.device
     epochs_to_train = args.epochs_to_train
     validate_batch_frequency = args.validate_batch_frequency
@@ -113,9 +113,13 @@ def main(args):
     # model_type = args.model_type
     num_branches = args.num_branches
     # number_of_objpart_classes = args.num_objpart_classes
-    number_of_objpart_classes = 3 if merge_level == 'trinary' else 2
     segmentation_only = args.segmentation_only
     dump_dir = args.dump_dir
+    objpart_weight = args.objpart_weight
+    assert objpart_weight >= 0 and objpart_weight <=1
+
+    print("[debug] objpart_weight = {}".format(objpart_weight))
+
     # **************************************
     time_now = datetime.datetime.now().strftime("%Y_%m_%d_%H_%M")
 
@@ -132,7 +136,7 @@ def main(args):
     number_of_semantic_classes = 21  # Pascal VOC
     # number_of_objpart_classes = 2   # object or part        # GILAD
     semantic_labels = range(number_of_semantic_classes)
-    objpart_labels = range(number_of_objpart_classes)
+    
     #  validate_first = False
     output_predicted_images = True    # GILAD
     # which_vis_type = ['None' ,'objpart', 'semantic', 'separated'][0]
@@ -167,10 +171,6 @@ def main(args):
     # End define training parameters
     # **********************************************************
 
-    #make_dump(save_model_name, )  
-    # print("locals:") 
-    # print(locals())
-    make_dump(dump_dir, save_model_name, locals())
 
     print("Setting visible GPUS to machine {}".format(device))
 
@@ -184,16 +184,24 @@ def main(args):
     (trainloader, trainset), (valset_loader, _) = get_training_loaders(
         DATASET_DIR, network_dims, batch_size,
         num_workers, mask_type, merge_level)
-    
+
+    if merge_level == 'binary':
+        number_of_objpart_classes = 2
+    elif merge_level == 'trinary':
+        number_of_objpart_classes = 3
+    else:
+        number_of_objpart_classes = 1  # 1 for background...
+        print("network_dims: {}".format(network_dims))
+        for k in network_dims:
+            number_of_objpart_classes += 1 + network_dims[k]
+
+    objpart_labels = range(number_of_objpart_classes)
+    print("Training for {} objpart categories".format(
+        number_of_objpart_classes))
+
+    make_dump(dump_dir, save_model_name, locals())
     # GILAD
-    number_of_classes = 21
-    # number_of_classes = 1  # 1 for background...
-    # print(network_dims)
-    # for k in network_dims:
-    #     number_of_classes += 1 + network_dims[k]
-    # objpart_labels = range(number_of_classes)
-    # print("Training for {} objpart categories".format(
-    #     number_of_classes))
+    # number_of_classes = 21
     
     print("=> Creating network and optimizer")
     train_params = {}
@@ -221,7 +229,7 @@ def main(args):
         'init_lr': init_lr,
         'writer': writer,
         'validate_batch_frequency': validate_batch_frequency,
-        'number_of_classes': number_of_classes,
+        # 'number_of_classes': number_of_classes,
         'number_of_semantic_classes': number_of_semantic_classes,
         'number_of_objpart_classes' : number_of_objpart_classes,    # GILAD
         'save_model_name': save_model_name,
@@ -229,6 +237,8 @@ def main(args):
         'num_branches' : num_branches,
         'which_vis_type' : which_vis_type,
         'segmentation_only' : segmentation_only,
+        'merge_level' : merge_level,
+        'objpart_weight' : objpart_weight
     })
 
     op_map = net.flat_map     # GILAD
@@ -236,7 +246,7 @@ def main(args):
     if output_predicted_images:
         print("=> Outputting predicted images to folder 'predictions'")
         validate_and_output_images(  
-            net, valset_loader, op_map, which=which_vis_type, alpha=0.7, writer=writer,
+            net, valset_loader, op_map, merge_level, which=which_vis_type, alpha=0.7, writer=writer,
              step_num=0, save_name=save_model_name)
         while True:
             resp = input("=> Done. Do you wish to continue training? (y/n):\t")
@@ -253,7 +263,7 @@ def main(args):
     if validate_first:
         print("=> Validating network")
         sc1, sc2, sc3 = validate(
-            net, valset_loader, (objpart_labels, semantic_labels), num_branches)
+            net, valset_loader, (objpart_labels, semantic_labels), merge_level)
         print("{}\t{}\t{}".format(sc1, sc2, sc3))
 
     print("=> Entering training function")
@@ -262,7 +272,7 @@ def main(args):
     writer.close()
 
 
-def validate(net, loader, labels, num_branches):
+def validate(net, loader, labels, merge_level):
     ''' Computes mIoU for``net`` over the a set.
         args::
             :param ``net``: network (in this case resnet34_8s_dilated
@@ -275,7 +285,7 @@ def validate(net, loader, labels, num_branches):
     net.eval()
     # hardcoded in for the object-part infernce
     # TODO: change to be flexible/architecture-dependent
-    if num_branches == 2:     # GILAD
+    if merge_level == 'binary' or merge_level == 'trinary':     # GILAD
         no_parts = []
     else:
         no_parts = [0, 4, 9, 11, 18, 20, 24, 29, 31, 38, 40]
@@ -300,12 +310,16 @@ def validate(net, loader, labels, num_branches):
             semantic_logits, semantic_anno)
         # objpart_pred_np, objpart_anno_np = numpyify_logits_and_annotations(
         #     objpart_logits, objpart_anno)
-        if num_branches == 2:     # GILAD
+        if merge_level == 'binary' or merge_level == 'trinary':     # GILAD
             objpart_pred_np, objpart_anno_np = numpyify_logits_and_annotations(
                     objpart_logits, objpart_anno)
+        elif merge_level == '61-way':
+            objpart_pred_np, objpart_anno_np = outputs_tonp_gt_61_way(
+                objpart_logits, objpart_anno, net.flat_map)
         else:
             objpart_pred_np, objpart_anno_np = outputs_tonp_gt(
                 objpart_logits, objpart_anno, net.flat_map)
+
         print("objpart_pred_np = {}, objpart_anno_np = {}".format(objpart_pred_np,
                 objpart_anno_np))
         print("objpart_pred_np: #1s = {}, #0s = {}".format(np.sum(objpart_pred_np == 1),
@@ -388,7 +402,7 @@ def train(train_params):
     best_sem_val_score = train_params['best_sem_val_score']
     semantic_criterion = train_params['semantic_criterion']
     objpart_criterion = train_params['objpart_criterion']
-    number_of_classes = train_params['number_of_classes']
+    # number_of_classes = train_params['number_of_classes']
     number_of_semantic_classes = train_params['number_of_semantic_classes']
     number_of_objpart_classes = train_params['number_of_objpart_classes']
     save_model_folder = train_params['save_model_folder']
@@ -396,10 +410,13 @@ def train(train_params):
     num_branches = train_params['num_branches']
     which_vis_type = train_params['which_vis_type']
     segmentation_only = train_params['segmentation_only']
+    merge_level = train_params['merge_level']
+    objpart_weight = train_params['objpart_weight']
+    semantic_weight = 1 - objpart_weight
     # could try to learn these as parameters...
     # currently not implemented
-    objpart_weight = Variable(torch.Tensor([1])).cuda()
-    semantic_weight = Variable(torch.Tensor([1])).cuda()
+    objpart_weight = Variable(torch.Tensor([objpart_weight])).cuda()
+    semantic_weight = Variable(torch.Tensor([semantic_weight])).cuda()
     _one_weight = Variable(torch.Tensor([1])).cuda()
 
     objpart_labels = range(number_of_objpart_classes)   # GILAD
@@ -475,6 +492,9 @@ def train(train_params):
 
             # forward + backward + optimize
             objpart_logits, semantic_logits = net(img)
+            print("*" * 100)
+            print("[train.py] objpart_logits.size = {}, semantic_logits.size = {}".format(
+                  objpart_logits.size(), semantic_logits.size()))
             # print("[#](1.8) DEBUG: objpart_logits, semantic_logits")
             # print(objpart_logits.size())
             # print(semantic_logits.size())
@@ -491,49 +511,46 @@ def train(train_params):
 
             # Score the overall accuracy
             # prepend _ to avoid interference with the training
-            if num_branches == 2:
+            if merge_level == 'binary' or merge_level == 'trinary':
                 _op_log_flt_vld = op_log_flt_vld
                 _op_anno_flt_vld = op_anno_flt_vld
+            elif merge_level == '61-way':
+                _op_log_flt_vld, _op_anno_flt_vld = compress_objpart_logits_61_way(
+                    op_log_flt_vld, op_anno_flt_vld, net.flat_map)
             else:
                 _op_log_flt_vld, _op_anno_flt_vld = compress_objpart_logits(
                     op_log_flt_vld, op_anno_flt_vld, net.flat_map)
 
             if len(_op_log_flt_vld) > 0:
-                _, logits_toscore = torch.max(_op_log_flt_vld, dim=1)
-                # _ind_ = torch.gt(_op_anno_flt_vld, 0)    # GILAD
-  
-                # print("[#](2) DEBUG: logits_toscore, _ind_")
-                # print(logits_toscore.size())
-                # print(_ind_.size())
-                # print(logits_toscore)
-                # print(_ind_)
-                # op_pred_gz = logits_toscore[_ind_]
-                # _op_anno_gz = _op_anno_flt_vld[_ind_]
+                if merge_level == 'binary' or merge_level == 'trinary':
+                    _, logits_toscore = torch.max(_op_log_flt_vld, dim=1)
+                    correct_idxs = np.nonzero(logits_toscore.data == _op_anno_flt_vld.data)
+                    this_correct_points = torch.sum(logits_toscore == _op_anno_flt_vld).float().data[0]
+                    # print("[train.py] correct idxs = {}".format(correct_idxs))   # DEBUG 
+                    correct_points += this_correct_points
+                    num_points += len(_op_anno_flt_vld)
 
-                # print("[#](3) DEBUG: op_pred_gz, _op_anno_gz")              
-                # print(op_pred_gz)
-                # print(type(op_pred_gz[0]))
-                # print(op_pred_gz.size())
-                # print(_op_anno_gz)
-                # print(type(_op_anno_gz[0]))
-                # print(_op_anno_gz.size())
-                # print(torch.sum(op_pred_gz == _op_anno_gz))
-                # correct_points += float(torch.sum(op_pred_gz == _op_anno_gz))
-                correct_idxs = np.nonzero(logits_toscore.data == _op_anno_flt_vld.data)
-                this_correct_points = torch.sum(logits_toscore == _op_anno_flt_vld).float().data[0]
-                # print("[train.py] correct idxs = {}".format(correct_idxs))   # DEBUG 
-                correct_points += this_correct_points
-                num_points += len(_op_anno_flt_vld)
-
-                # Balance the weights
-                this_num_points = len(_op_anno_flt_vld) # float(len(_ind_))   # GILAD
-                print("""this_num_coorect_points = {}, this_num_points = {}, total_number_of_correct = {},  
-                      total_num_of_points = {}""".format(this_correct_points,
-                      this_num_points, correct_points, num_points))
-                op_scale = Variable(torch.Tensor([this_num_points])).cuda() # _one_weight
-                # if num_points != 0:
-                #     multiplier = Variable(torch.Tensor(
-                #         [sz / this_num_points])).cuda()
+                    # Balance the weights
+                    this_num_points = len(_op_anno_flt_vld) # float(len(_ind_))   # GILAD
+                    print("""this_num_coorect_points = {}, this_num_points = {}, total_number_of_correct = {},  
+                          total_num_of_points = {}""".format(this_correct_points,
+                          this_num_points, correct_points, num_points))
+                    op_scale = Variable(torch.Tensor([this_num_points])).cuda() # _one_weight
+                    # if num_points != 0:
+                    #     multiplier = Variable(torch.Tensor(
+                    #         [sz / this_num_points])).cuda()
+               
+                else:
+                    _, logits_toscore = torch.max(_op_log_flt_vld, dim=1)
+                    _ind_ = torch.gt(_op_anno_flt_vld, 0)
+                    op_pred_gz = logits_toscore[_ind_]
+                    _op_anno_gz = _op_anno_flt_vld[_ind_]
+                    print("!! (op_pred_gz == _op_anno_gz).sum().data[0] = {}".format(torch.sum(op_pred_gz == _op_anno_gz).data[0]))
+                    correct_points += float(torch.sum(op_pred_gz == _op_anno_gz).data[0])
+                    num_points += len(_op_anno_gz)
+                    # Balance the weights
+                    this_num_points = float(len(_ind_))
+                    op_scale = Variable(torch.Tensor([this_num_points])).cuda() # _one_weight
 
                 # Compute cross-entropy loss for the object-part inference task
                 objpart_loss = objpart_criterion(
@@ -565,23 +582,33 @@ def train(train_params):
                 print("segmentation loss only!")
                 loss = semantic_loss
             else:
+                print("[train.py] sem_weight = {}, objpart_weight= {}".format(
+                    semantic_batch_weight, objpart_batch_weight))
                 loss = semantic_loss * semantic_batch_weight + \
                 objpart_loss * objpart_batch_weight
 
             if batch_average:
                 loss = loss / batch_size
 
+            # summary of per pixel loss into one number
+            sem_loss_val = semantic_loss.data[0] / semantic_logits_flatten_valid.size(0)
             writer.add_scalar(
                 'losses/semantic_loss',
-                semantic_loss.data[0] /
-                semantic_logits_flatten_valid.size(0),
+                sem_loss_val,
                 number_training_batches * epoch + i)
 
             if len(op_log_flt_vld) > 0:
+                objpart_loss_val = objpart_loss.data[0] / op_log_flt_vld.size(0)
                 writer.add_scalar(
                     'losses/objpart_loss',
-                    objpart_loss.data[0] /
-                    op_log_flt_vld.size(0),
+                    objpart_loss_val,
+                    number_training_batches * epoch + i)
+
+                combined_loss_val = (semantic_batch_weight * sem_loss_val +
+                                    objpart_batch_weight * objpart_loss_val)
+                writer.add_scalar(
+                    'losses/combined_loss',
+                    combined_loss_val,
                     number_training_batches * epoch + i)
 
             loss.backward()
@@ -591,7 +618,7 @@ def train(train_params):
                     (objpart_logits, objpart_anno),
                     (semantic_logits, semantic_anno),
                     overall_part_conf_mat, overall_sem_conf_mat,
-                    (objpart_labels, semantic_labels), num_branches, net.flat_map,
+                    (objpart_labels, semantic_labels), merge_level, net.flat_map,
                     writer,
                     number_training_batches * epoch + i)
                 ((objpart_mPrec, objpart_mRec),
@@ -608,15 +635,15 @@ def train(train_params):
                                   semantic_mIoU,
                                   number_training_batches * epoch + i)
 
-                if objpart_mPrec is not None:
+                # if objpart_mPrec is not None:
 
-                    writer.add_scalar('data/obj_part_mPrec',
-                                      objpart_mPrec,
-                                      number_training_batches * epoch + i)
+                  #   writer.add_scalar('data/obj_part_mPrec',
+                  #                     objpart_mPrec,
+                  #                     number_training_batches * epoch + i)
 
-                    writer.add_scalar('data/obj_part_mRec',
-                                      objpart_mRec,
-                                      number_training_batches * epoch + i)
+                  #   writer.add_scalar('data/obj_part_mRec',
+                  #                     objpart_mRec,
+                  #                     number_training_batches * epoch + i)
 
                 correct_points = 0.0
                 num_points = 0.0
@@ -625,13 +652,13 @@ def train(train_params):
         (curr_op_valscore,
          curr_sem_valscore,
          curr_op_gt_valscore) = validate(
-             net, valset_loader, (objpart_labels, semantic_labels), num_branches)
-        writer.add_scalar('validation/semantic_validation_score',
+             net, valset_loader, (objpart_labels, semantic_labels), merge_level)
+        writer.add_scalar('validation/semantic_validation_mIoU',
                           curr_sem_valscore, epoch)
-        writer.add_scalar('validation/objpart_validation_score',
+        writer.add_scalar('validation/objpart_validation_mIoU',
                           curr_op_valscore, epoch)
-        writer.add_scalar('validation/overall_objpart_validation_score',
-                          curr_op_valscore, epoch)
+        writer.add_scalar('validation/overall_objpart_validation_accuracy',
+                          curr_op_gt_valscore, epoch)
         
         # visualize
         # TODO: move this call to the validate() function
@@ -719,7 +746,7 @@ if __name__ == "__main__":
         '-g',
         '--part-grouping',
         type=str,
-        default='binary',
+        default='merged',
         help="Whether to predict for all parts, in part groups,"
         "or just for a binary obj/part task (for each class)."
         "Legal values are 'binary', 'merged', and 'sparse'")
@@ -733,6 +760,8 @@ if __name__ == "__main__":
         help="Weather or not to run semantic-segmentation only model")
     parser.add_argument('-dd', '--dump-dir', type=str, default='dumps/',
         help="dump's directory path")
+    parser.add_argument('-opw', '--objpart_weight', type=float,
+        help="weight ([0, 1]) corresponding to objpart_loss part in the combined loss")
 
 
     argvals = parser.parse_args()

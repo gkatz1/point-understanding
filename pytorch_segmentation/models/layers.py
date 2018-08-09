@@ -17,6 +17,7 @@ def size_splits(tensor, split_sizes, dim=0):
         dim += tensor.dim()
 
     dim_size = tensor.size(dim)
+    # GILAD
     if dim_size != torch.sum(torch.Tensor(split_sizes)):
         raise ValueError("Sum of split sizes exceeds tensor dim")
 

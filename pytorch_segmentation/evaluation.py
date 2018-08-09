@@ -21,6 +21,7 @@ import torchvision.transforms
 # from .models import resnet_dilated
 # from .models import partsnet
 from .models import objpart_net
+from .models import resnet_fcn
 from .datasets.pascal_voc import PascalVOCSegmentation
 from .transforms import (ComposeJoint,
                          RandomHorizontalFlipJoint,
@@ -250,6 +251,55 @@ def outputs_tonp_gt(logits, anno, op_map, flatten=True):
     return predictions, anno_np
 
 
+def outputs_tonp_gt_61_way(logits, anno, op_map, flatten=True):
+    ''' process logits and annotations for input into
+    confusion matrix function.
+
+    args::
+        ``logits``: network predictoins
+        ``anno``: ground truth annotations
+
+    returns::
+        flattened predictions, flattened annotations
+    '''
+    def to_triple(label, op_map):
+        '''Use gt labels to select the correct pair of
+           indices'''
+        try:
+            other_label1, other_label2 = op_map[label]
+        except:
+            print("[compress_objpart_logits] op_map = {}".format(op_map))
+            raise
+
+        # new_label, pair = to_pair(label, 20)
+        if label < other_label1:   # label of object
+            triple = [label, other_label1, other_label2]
+        elif other_label1 < label and label < other_label2:  # label of part
+            triple = [other_label1, label, other_label2]
+        else:   # label of ambiguous
+            triple = [other_label1, other_label2, label]
+
+        return triple
+
+    _logits = logits.data.cpu()
+    anno_np = anno.numpy()
+    predictions = np.zeros_like(anno_np)
+    # for index, anno_ind in np.ndenumerate(anno_np):
+    for index in zip(*np.where(np.logical_and(anno_np > 0, anno_np != 255))):
+        anno_ind = anno_np[index]
+        batch_ind = index[0]
+        i = index[1]
+        j = index[2]
+        channel_indices = to_triple(anno_ind, op_map)  # num_to_aggregate)
+        aided_prediction = channel_indices[np.argmax(
+            [_logits[batch_ind, ci, i, j] for ci in channel_indices])]
+
+        predictions[batch_ind, i, j] = aided_prediction
+    if flatten:
+        return predictions.flatten(), anno_np.flatten()
+    return predictions, anno_np
+
+
 def compress_objpart_logits(logits, anno, op_map):
     ''' Reduce N x 41 tensor ``logits`` to an N x 2 tensor ``compressed``,
         where ``compressed``[0] => "object" and ``compressed``[1] => part
@@ -261,12 +311,19 @@ def compress_objpart_logits(logits, anno, op_map):
     returns::
         compressed tensor of shape (N, 2)
     '''
+    print("[compress_objpart_logits] op_map = {}".format(op_map))
+
     anno = anno.data.cpu()
 
     def to_pair(label, op_map):
         '''Use gt labels to isloate op loss
         '''
-        other_label = op_map[label]
+        try:
+            other_label = op_map[label]
+        except:
+            print("[compress_objpart_logits] op_map = {}".format(op_map))
+            raise
+
         # new_label, pair = to_pair(label, 20)
         if label < other_label:
             pair = [label, other_label]
@@ -282,6 +339,60 @@ def compress_objpart_logits(logits, anno, op_map):
         # new_label, pair = to_pair(label, 20)
         new_label, pair = to_pair(label, op_map)
         indices.append(pair)
+        new_anno.append(new_label)
+    len_ = len(indices)
+    new_anno = Variable(torch.LongTensor(new_anno).cuda())
+    indices = Variable(torch.LongTensor(indices).cuda())
+    if len_ == 0:
+        compressed_logits = Variable(torch.Tensor([]).cuda())
+    else:
+        compressed_logits = torch.gather(logits, 1, indices)
+    return compressed_logits, new_anno
+
+
+def compress_objpart_logits_61_way(logits, anno, op_map):
+   ''' Reduce N x 61 tensor ``logits`` to an N x 3 tensor ``compressed``,
+        where ``compressed``[0] => "object" and ``compressed``[1] => part
+        ``compressed``[2] => ambiguous (generic).
+    args::
+        ``logits``: network predictions => 2D tensor of shape (N, 61)
+        ``anno``: ground truth annotations => 1D tensor of length N
+
+    returns::
+        compressed tensor of shape (N, 2)
+    '''
+    print("[compress_objpart_logits_61_way] op_map = {}".format(op_map))
+
+    anno = anno.data.cpu()
+
+    def to_triple(label, op_map):
+        '''Use gt labels to isloate op loss
+        '''
+        try:
+            other_label1, other_label2 = op_map[label]
+        except:
+            print("[compress_objpart_logits] op_map = {}".format(op_map))
+            raise
+
+        # new_label, pair = to_pair(label, 20)
+        if label < other_label1:   # label of object
+            triple = [label, other_label1, other_label2]
+            new_label = 0
+        elif other_label1 < label and label < other_label2:  # label of part
+            triple = [other_label1, label, other_label2]
+            new_label = 1
+        else:   # label of ambiguous
+            triple = [other_label1, other_label2, label]
+            new_label = 2 
+
+        return new_label, triple
+    
+    indices = []
+    new_anno = []
+    for _, label in enumerate(anno):
+        # new_label, pair = to_pair(label, 20)
+        new_label, triple = to_triple(label, op_map)
+        indices.append(triple)
         new_anno.append(new_label)
     len_ = len(indices)
     new_anno = Variable(torch.LongTensor(new_anno).cuda())
@@ -337,7 +448,7 @@ def validate_batch(
         overall_part_confusion_matrix,
         overall_semantic_confusion_matrix,
         labels,
-        num_branches,
+        merge_level,
         op_map,
         writer=None,
         index=0):
@@ -365,10 +476,13 @@ def validate_batch(
     # objpart_prediction_np, objpart_anno_np = numpyify_logits_and_annotations(
     #     objpart_logits, objpart_anno)
         
-    if num_branches == 2:     # GILAD
+    if merge_level == 'binary' or merge_level == 'trinary':     # GILAD
         objpart_prediction_np, objpart_anno_np = numpyify_logits_and_annotations(
                 objpart_logits, objpart_anno)
         no_parts = []
+    elif merge_level == '61-way':
+        objpart_prediction_np, objpart_anno_np = outputs_tonp_gt_61_way(
+                objpart_logits, objpart_anno, op_map)
     else:
         objpart_prediction_np, objpart_anno_np = outputs_tonp_gt(
                 objpart_logits, objpart_anno, op_map)
@@ -569,18 +683,22 @@ def get_network_and_optimizer(
 
     '''
     print("[#] [evaluation.py] num_classes_objpart = {}".format(num_classes_objpart))
-    if arch == 'resnet34_8s':
-        fcn = resnet.Resnet34_8s(objpart_num_classes=num_classes_objpart)
-    
+    # if arch == 'resnet34_8s':
+    #     fcn = resnet_test.Resnet34_8s(objpart_num_classes=num_classes_objpart) 
     fcn = objpart_net.OPSegNet(
         arch=arch,
         output_dims=network_dims,
         num_classes_objpart=num_classes_objpart,
-        pretrained=False)
+        pretrained=True)
     # fcn = resnet_dilated.Resnet34_8s(
     #     output_dims=network_dims,
     #     part_task=True)
 
+    # if arch == 'resnet34_8s_2b':
+    #     fcn = resnet_fcn.Resnet34_8s_2b(objpart_num_classes=num_classes_objpart)
+    #     output_dims = {}
+    #     print("Taking resnet34_8s_2b debug lane")
+ 
     optimizer = optim.Adam(fcn.parameters(), lr=init_lr, weight_decay=0.0001)
     if load_from_local:
         (start_epoch, best_semantic_val_score,
@@ -623,7 +741,7 @@ def get_cmap():
     return cmap
 
 
-def validate_and_output_images(net, loader, op_map,
+def validate_and_output_images(net, loader, op_map, merge_level=None
                                which='semantic', alpha=0.6, writer=None,
                                step_num=0, save_name='output_images'):
     ''' Computes mIoU for``net`` over the a set.
@@ -701,8 +819,12 @@ def validate_and_output_images(net, loader, op_map,
         elif which == 'objpart':
             # prediction, anno = outputs_tonp_gt(
             #     objpart_logits, objpart_anno,semantic_anno, flatten=False)
-            prediction, _ = outputs_tonp_gt(
-                objpart_logits, semantic_anno, op_map, flatten=False)
+            if merge_level == '61-way':
+                prediction, _ = outputs_tonp_gt_61_way(
+                    objpart_logits, semantic_anno, op_map, flatten=False)
+            else:
+                prediction, _ = outputs_tonp_gt(
+                    objpart_logits, semantic_anno, op_map, flatten=False)
             prediction[np.logical_and(
                 prediction > 0, prediction < 21)] = 1  # object
             prediction[prediction > 20] = 2  # part

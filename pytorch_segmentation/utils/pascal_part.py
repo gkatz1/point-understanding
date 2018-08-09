@@ -30,10 +30,9 @@ def get_pascal_object_part_points(points_root, fname):
     # fname = "pascal_gt.json"
     # TODO: Check these files...
     with open(os.path.join(points_root, fname), 'r') as f:
-        # txt = f.readline().strip()
-        # parts_per_class = json.loads(f.readline().strip())    # GILAD
+        parts_per_class = json.loads(f.readline().strip())    # GILAD
         data = json.loads(f.readline().strip())
-    return data
+    return data, parts_per_class
 
 
 def get_valid_circle_indices(arr, center, r):
@@ -55,6 +54,21 @@ def get_valid_circle_indices(arr, center, r):
     return eyes, jays
 
 
+# TODO: make func more generic, currently uses hardcoded values
+def get_ambiguous_val_in_mask(answers):
+    """return the value of ambiguous val for the corresponding
+    category
+    """
+    num_classes = 20
+    offset = min(answers)
+    if min_val > num_classes
+        offset = min_val - num_classes
+
+    # return AMBIGUOUS_VALS[obj_val] 
+    base = num_classes * 2    # point where ambiguous values starts at
+    return base + offset
+
+
 def get_point_mask(point_annotations, mask_type, size, anno_params, smooth=False):
     """
     anno_params (dict): {parm:val} --> holds params needed for building the right mask according to the task
@@ -68,7 +82,7 @@ def get_point_mask(point_annotations, mask_type, size, anno_params, smooth=False
     if not point_annotations:
         return point_mask  # , weights
     
-    print("[#] DEBUG, in pascal_part")
+    print("------ [utils/pascal_part.py] mask_type = {}".foramt(mask_type))
     # mode: Each annotation is the mode
     # of all responses
     if mask_type == 0:
@@ -172,6 +186,25 @@ def get_point_mask(point_annotations, mask_type, size, anno_params, smooth=False
                 point_mask[i, j] = _answers[0]
             else:
                 point_mask[i, j] = -1   # ambiguous # TBC - make ambiguous val an argument
+
+    # HERE
+    elif mask_type == 4:
+        for point, answers in point_annotations.items():
+            coords = point.split("_")
+            i, j = int(coords[1]), int(coords[0])
+            _answers = np.array([ans for ans in answers if ans >= -1], dtype=np.int64)
+
+            if _answers.size < 3:    # Using only points with at least 3 answers
+                continue
+ 
+            if np.all(_answers == _answers[0]):
+                print("+" * 100)
+                point_mask[i, j] = _answers[0]
+            else:
+                if len(set(_answers)) >= 1 and len(set(answers)) <= 2:
+                    point_mask[i, j] = get_ambiguous_val_in_mask(_answers)
+                    print("----- [utils/pascal_part.py] ambig_val = {}, _answers[0] = {}".format(
+                          point_mask[i, j], _answers[0])
 
     else:
         raise NotImplementedError(
