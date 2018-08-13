@@ -61,8 +61,8 @@ def get_ambiguous_val_in_mask(answers):
     """
     num_classes = 20
     offset = min(answers)
-    if min_val > num_classes
-        offset = min_val - num_classes
+    if offset > num_classes:
+        offset = offset - num_classes
 
     # return AMBIGUOUS_VALS[obj_val] 
     base = num_classes * 2    # point where ambiguous values starts at
@@ -82,7 +82,7 @@ def get_point_mask(point_annotations, mask_type, size, anno_params, smooth=False
     if not point_annotations:
         return point_mask  # , weights
     
-    print("------ [utils/pascal_part.py] mask_type = {}".foramt(mask_type))
+    print("------ [utils/pascal_part.py] mask_type = {}".format(mask_type))
     # mode: Each annotation is the mode
     # of all responses
     if mask_type == 0:
@@ -192,7 +192,7 @@ def get_point_mask(point_annotations, mask_type, size, anno_params, smooth=False
         for point, answers in point_annotations.items():
             coords = point.split("_")
             i, j = int(coords[1]), int(coords[0])
-            _answers = np.array([ans for ans in answers if ans >= -1], dtype=np.int64)
+            _answers = np.array([ans for ans in answers if ans >= 0], dtype=np.int64)
 
             if _answers.size < 3:    # Using only points with at least 3 answers
                 continue
@@ -204,8 +204,7 @@ def get_point_mask(point_annotations, mask_type, size, anno_params, smooth=False
                 if len(set(_answers)) >= 1 and len(set(answers)) <= 2:
                     point_mask[i, j] = get_ambiguous_val_in_mask(_answers)
                     print("----- [utils/pascal_part.py] ambig_val = {}, _answers[0] = {}".format(
-                          point_mask[i, j], _answers[0])
-
+                          point_mask[i, j], _answers[0]))
     else:
         raise NotImplementedError(
             "mask_type {} not implemented".format(mask_type))

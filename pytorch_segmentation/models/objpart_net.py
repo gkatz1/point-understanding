@@ -210,8 +210,10 @@ class OPSegNet(nn.Module):
         self.op_map = op_map     # 61-way debugging needed. Make sure results are correct
         self.flat_map = {}
         if self.num_classes == 61:
+            print("----- creating 61-way map")
+            print("sorted(output_dims) = {}".format(sorted(self.output_dims)))
             for o in sorted(self.output_dims):
-                if k > self.object_max_val:
+                if int(o) > self.object_max_val:
                     break
                 p = op_map[o]
                 amb = op_map[p]  

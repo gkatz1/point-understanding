@@ -103,7 +103,7 @@ class PascalVOCSegmentation(data.Dataset):
         assert mask_type in _MASKTYPE, "mask_type {} error. Must be one of {}".format(
             mask_type, list(_MASKTYPE))
 
-        assert which in ['binary', 'trinary', 'merged', 'sparse']
+        assert which in ['binary', 'trinary', 'merged', 'sparse', '61-way']
         # ATTENTION - Right now the 'binary_pascal_gt' is merged   # TBC
         self.PASCAL_POINT_FILE_NAME = which + "_" + self.PASCAL_POINT_FILE_NAME 
         print("Collecting points from : {}".format(self.PASCAL_POINT_FILE_NAME))

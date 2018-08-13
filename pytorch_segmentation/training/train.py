@@ -43,7 +43,9 @@ from pytorch_segmentation.evaluation import (
     get_valid_annos,
     numpyify_logits_and_annotations,
     outputs_tonp_gt,
+    outputs_tonp_gt_61_way,
     compress_objpart_logits,
+    compress_objpart_logits_61_way,
     get_iou,
     validate_batch,
     get_precision_recall,
@@ -136,7 +138,9 @@ def main(args):
     number_of_semantic_classes = 21  # Pascal VOC
     # number_of_objpart_classes = 2   # object or part        # GILAD
     semantic_labels = range(number_of_semantic_classes)
-    
+   
+    max_object_label = 20
+ 
     #  validate_first = False
     output_predicted_images = True    # GILAD
     # which_vis_type = ['None' ,'objpart', 'semantic', 'separated'][0]
@@ -189,6 +193,13 @@ def main(args):
         number_of_objpart_classes = 2
     elif merge_level == 'trinary':
         number_of_objpart_classes = 3
+    elif merge_level == '61-way':
+        number_of_objpart_classes = 1
+        print("network_dims: {}".format(network_dims))
+        for k in sorted(network_dims):
+            number_of_objpart_classes += network_dims[k]
+            if int(k) <= max_object_label:
+                number_of_objpart_classes += 1
     else:
         number_of_objpart_classes = 1  # 1 for background...
         print("network_dims: {}".format(network_dims))
@@ -760,7 +771,7 @@ if __name__ == "__main__":
         help="Weather or not to run semantic-segmentation only model")
     parser.add_argument('-dd', '--dump-dir', type=str, default='dumps/',
         help="dump's directory path")
-    parser.add_argument('-opw', '--objpart_weight', type=float,
+    parser.add_argument('-opw', '--objpart_weight', type=float, default=0.5,
         help="weight ([0, 1]) corresponding to objpart_loss part in the combined loss")
 
 
