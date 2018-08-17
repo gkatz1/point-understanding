@@ -26,6 +26,7 @@ from .datasets.pascal_voc import PascalVOCSegmentation
 from .transforms import (ComposeJoint,
                          RandomHorizontalFlipJoint,
                          RandomCropJoint)
+from .losses import CrossEntropyLossElementwise
 
 # pylint: disable=too-many-arguments, invalid-name, len-as-condition,
 # pylint: disable=too-many-locals, too-many-branches,too-many-statements
@@ -63,7 +64,8 @@ def poly_lr_scheduler(optimizer, init_lr, iteration, lr_decay_iter=1,
 
 
 def get_training_loaders(dataset_dir, network_dims, batch_size=8,
-                         num_workers=4, mask_type="consensus",
+                         num_workers=4,
+                         mask_type = {'train': "consensus", 'val': "consensus"},
                          which='binary'):
     '''Returns loaders for the training set.
         args:
@@ -72,13 +74,16 @@ def get_training_loaders(dataset_dir, network_dims, batch_size=8,
             :param ``dataset_dir``: str indicating the directory
             inwhich the Pascal VOC dataset is stored
             ... etc.
-            :param ``mask_type``:
+            :param ``mask_type``: dictionary (keys: train, val)
             :param ``which``: one of 'binary,', 'trinary', 'merged', or 'sparse'
             'binary': for each class: object or part
             'trinary': for each class: object, part or ambiguous
             'merged': for each class: object or one of k "super-parts"
             'sparse': for each calss: object or one of N parts
     '''
+
+    print("[get_training_loaders], mask_type: {} => {}, {} => {}".format(
+          'train', mask_type['train'], 'val', mask_type['val']))
 
     assert isinstance(network_dims, dict)
     insize = 512
@@ -102,7 +107,7 @@ def get_training_loaders(dataset_dir, network_dims, batch_size=8,
                                      network_dims=network_dims,
                                      download=False,
                                      joint_transform=train_transform,
-                                     mask_type=mask_type,
+                                     mask_type=mask_type['train'],
                                      which=which)
 
     trainloader = torch.utils.data.DataLoader(
@@ -127,7 +132,7 @@ def get_training_loaders(dataset_dir, network_dims, batch_size=8,
                                    train=False,
                                    download=False,
                                    joint_transform=valid_transform,
-                                   mask_type=mask_type,
+                                   mask_type=mask_type['val'],
                                    which=which)
 
     valset_loader = torch.utils.data.DataLoader(valset, batch_size=1,
@@ -232,16 +237,40 @@ def outputs_tonp_gt(logits, anno, op_map, flatten=True):
             return [label, other_label]
         return [other_label, label]
 
+    def to_triple(label, op_map):
+        '''Use gt labels to select the correct pair of
+           indices'''
+        try:
+            other_label1, other_label2 = op_map[label]
+        except:
+            print("[compress_objpart_logits] op_map = {}".format(op_map))
+            raise
+
+        # new_label, pair = to_pair(label, 20)
+        if label < other_label1:   # label of object
+            triple = [label, other_label1, other_label2]
+        elif other_label1 < label and label < other_label2:  # label of part
+            triple = [other_label1, label, other_label2]
+        else:   # label of ambiguous
+            triple = [other_label1, other_label2, label]
+
+        return triple
+
     _logits = logits.data.cpu()
     anno_np = anno.numpy()
     predictions = np.zeros_like(anno_np)
+    num_classes = logits.size()[-1]
     # for index, anno_ind in np.ndenumerate(anno_np):
     for index in zip(*np.where(np.logical_and(anno_np > 0, anno_np != 255))):
         anno_ind = anno_np[index]
         batch_ind = index[0]
         i = index[1]
         j = index[2]
-        channel_indices = to_pair(anno_ind, op_map)  # num_to_aggregate)
+        if num_classes == 61:
+            channel_indices = to_triple(anno_ind, op_map)  # num_to_aggregate)
+        else:
+            channel_indices = to_pair(anno_ind, op_map)  # num_to_aggregate)
+
         aided_prediction = channel_indices[np.argmax(
             [_logits[batch_ind, ci, i, j] for ci in channel_indices])]
 
@@ -280,7 +309,7 @@ def outputs_tonp_gt_61_way(logits, anno, op_map, flatten=True):
             triple = [other_label1, other_label2, label]
 
         return triple
-
+    
     _logits = logits.data.cpu()
     anno_np = anno.numpy()
     predictions = np.zeros_like(anno_np)
@@ -299,8 +328,8 @@ def outputs_tonp_gt_61_way(logits, anno, op_map, flatten=True):
         return predictions.flatten(), anno_np.flatten()
     return predictions, anno_np
 
-
-def compress_objpart_logits(logits, anno, op_map):
+# check
+def compress_objpart_logits(logits, anno, op_map, method="gt", semseg_logits=None):
     ''' Reduce N x 41 tensor ``logits`` to an N x 2 tensor ``compressed``,
         where ``compressed``[0] => "object" and ``compressed``[1] => part
         (generic).
@@ -332,13 +361,42 @@ def compress_objpart_logits(logits, anno, op_map):
             pair = [other_label, label]
             new_label = 1
         return new_label, pair
-    
+
+    def to_triple(label, op_map):
+        '''Use gt labels to isloate op loss
+        '''
+        try:
+            other_label1, other_label2 = op_map[label]
+        except:
+            print("[compress_objpart_logits] op_map = {}".format(op_map))
+            raise
+
+        # new_label, pair = to_pair(label, 20)
+        if label < other_label1:   # label of object
+            triple = [label, other_label1, other_label2]
+            new_label = 0
+        elif other_label1 < label and label < other_label2:  # label of part
+            triple = [other_label1, label, other_label2]
+            new_label = 1
+        else:   # label of ambiguous
+            triple = [other_label1, other_label2, label]
+            new_label = 2 
+
+        return new_label, triple
+
+    print("^" * 50 + "compress_logits, method = {}".format(method))
+
+    num_classes = logits.size()[-1] 
     indices = []
     new_anno = []
     for _, label in enumerate(anno):
         # new_label, pair = to_pair(label, 20)
-        new_label, pair = to_pair(label, op_map)
-        indices.append(pair)
+        if num_classes == 61:
+            new_label, triple = to_triple(label, op_map)
+            indices.append(triple)
+        else:
+            new_label, pair = to_pair(label, op_map)
+            indices.append(pair)
         new_anno.append(new_label)
     len_ = len(indices)
     new_anno = Variable(torch.LongTensor(new_anno).cuda())
@@ -347,11 +405,77 @@ def compress_objpart_logits(logits, anno, op_map):
         compressed_logits = Variable(torch.Tensor([]).cuda())
     else:
         compressed_logits = torch.gather(logits, 1, indices)
+    
+    if method == "sum":
+        indices = None
+        compressed_logits = None
+        if num_classes == 41:
+            object_max_label = 20   # inclusive
+            part_max_label = 40
+            indices = Variable(torch.LongTensor([object_max_label, part_max_label]).expand(
+                logits.size()[0], 2).cuda())
+            csum = torch.cumsum(logits, dim=1)
+            compressed_logits = torch.gather(csum, 1, indices)
+            # tor_ar = torch.arange(0,compressed_logits.size()[0]).long().cuda()
+            # comp_cloned = compressed_logits[:, 0].clone()
+            compressed_logits[:, 1] = compressed_logits[:, 1] - compressed_logits[:, 0] #comp_cloned #compressed_logits[:, 0].clone() #.contiguous()
+            compressed_logits[:, 0] = compressed_logits[:, 0] - logits[:, 0]#.contiguous()   # subtract bg
+
+        elif num_classes == 61:
+            object_max_label = 20   # inclusive
+            part_max_label = 40
+            ambiguous_max_label = 60
+            indices = Variable(torch.LongTensor([object_max_label, part_max_label, 
+                ambiguous_max_label]).expand(logits.size()[0], 3).cuda())
+            csum = torch.cumsum(logits, dim=1)
+            compressed_logits = torch.gather(csum, 1, indices)
+            compressed_logits[:, 2] = compressed_logits[:, 2] - compressed_logits[:, 1]
+            compressed_logits[:, 1] = compressed_logits[:, 1] - compressed_logits[:, 0]
+            compressed_logits[:, 0] = compressed_logits[:, 0] - logits[:, 0]   # subtract bg
+
+    elif method == "predicted_label":
+        if logits.size()[0] != semseg_logits.size()[0]:
+            with open('compress_logits_sizes_debug', 'a+') as f:
+                f.write("logits size = {}, semseg_pred size = {}\n".format(logits.size()[0],
+                    semseg_logits.size()[0]))
+            return compressed_logits, new_anno   # for now - use gt instead of prediction
+ 
+        indices = []
+        compressed_logits = None
+        # use semsg_logits
+        # extract the prediction
+        # use the prediction as the label
+        _, semseg_predictions = torch.max(semseg_logits, dim=1)    # what about invalid logits? take the gt?
+        ctr = 0
+        for idx, label in enumerate(semseg_predictions):
+            if label == 0:
+                ctr += 1
+                with open('bg_label_debug', 'wb') as f:
+                    f.write("{}".format(ctr))
+                label = anno[idx]
+            # new_label, pair = to_pair(label, 20)
+            if num_classes == 61:
+                _, triple = to_triple(label, op_map)
+                indices.append(triple)
+            else:
+                _, pair = to_pair(label, op_map)
+                indices.append(pair)
+        len_ = len(indices)
+        indices = Variable(torch.LongTensor(indices).cuda())
+        if len_ == 0:
+            compressed_logits = Variable(torch.Tensor([]).cuda())
+        else:
+            print("indices_size = {}, logits_size = {}".format(logits.size(), indices.size()))
+            compressed_logits = torch.gather(logits, 1, indices)
+
+    elif method == "gt":
+        pass
+
     return compressed_logits, new_anno
 
 
 def compress_objpart_logits_61_way(logits, anno, op_map):
-   ''' Reduce N x 61 tensor ``logits`` to an N x 3 tensor ``compressed``,
+    """ Reduce N x 61 tensor ``logits`` to an N x 3 tensor ``compressed``,
         where ``compressed``[0] => "object" and ``compressed``[1] => part
         ``compressed``[2] => ambiguous (generic).
     args::
@@ -360,7 +484,7 @@ def compress_objpart_logits_61_way(logits, anno, op_map):
 
     returns::
         compressed tensor of shape (N, 2)
-    '''
+    """
     print("[compress_objpart_logits_61_way] op_map = {}".format(op_map))
 
     anno = anno.data.cpu()
@@ -483,6 +607,10 @@ def validate_batch(
     elif merge_level == '61-way':
         objpart_prediction_np, objpart_anno_np = outputs_tonp_gt_61_way(
                 objpart_logits, objpart_anno, op_map)
+        no_parts = [0, 4, 9, 11, 18, 20, 24, 29, 31, 38, 40]
+        # Make sure to ignore all background class values
+        objpart_anno_np[objpart_anno_np == 0] = -2
+        # objpart_prediction_np[objpart_anno_np == 0] = -1
     else:
         objpart_prediction_np, objpart_anno_np = outputs_tonp_gt(
                 objpart_logits, objpart_anno, op_map)
@@ -661,7 +789,8 @@ def load_checkpoint(load_path, fcn, optimizer):
 def get_network_and_optimizer(
         arch,
         network_dims,
-        num_classes_objpart,
+        num_classes_objpart, 
+        loss_type,
         load_from_local=False,
         model_path=None,
         train_params=None,
@@ -710,9 +839,13 @@ def get_network_and_optimizer(
         best_objpart_accuracy = float("inf")	# GILAD
     fcn.cuda()
     fcn.train()
-
-    semantic_criterion = nn.CrossEntropyLoss(size_average=False).cuda()
-    objpart_criterion = nn.CrossEntropyLoss(size_average=False).cuda()
+    
+    if loss_type == '1_loss':
+        semantic_criterion = CrossEntropyLossElementwise().cuda()   # CHECK
+        objpart_criterion = CrossEntropyLossElementwise().cuda()   # CHECK
+    else:
+        semantic_criterion = nn.CrossEntropyLoss(size_average=False).cuda()
+        objpart_criterion = nn.CrossEntropyLoss(size_average=False).cuda()
 
     _to_update = {
         'semantic_criterion': semantic_criterion,
@@ -741,7 +874,7 @@ def get_cmap():
     return cmap
 
 
-def validate_and_output_images(net, loader, op_map, merge_level=None
+def validate_and_output_images(net, loader, op_map,
                                which='semantic', alpha=0.6, writer=None,
                                step_num=0, save_name='output_images'):
     ''' Computes mIoU for``net`` over the a set.
@@ -808,6 +941,7 @@ def validate_and_output_images(net, loader, op_map, merge_level=None
     for image, semantic_anno, objpart_anno in tqdm.tqdm(loader):
         img = Variable(image.cuda())
         objpart_logits, semantic_logits = net(img)
+        num_classes = objpart_logits.size()[-1]
 
         # First we do argmax on gpu and then transfer it to cpu
         if which == 'semantic':
@@ -819,15 +953,16 @@ def validate_and_output_images(net, loader, op_map, merge_level=None
         elif which == 'objpart':
             # prediction, anno = outputs_tonp_gt(
             #     objpart_logits, objpart_anno,semantic_anno, flatten=False)
-            if merge_level == '61-way':
-                prediction, _ = outputs_tonp_gt_61_way(
-                    objpart_logits, semantic_anno, op_map, flatten=False)
-            else:
-                prediction, _ = outputs_tonp_gt(
-                    objpart_logits, semantic_anno, op_map, flatten=False)
+            prediction, _ = outputs_tonp_gt(
+                objpart_logits, semantic_anno, op_map, flatten=False)
             prediction[np.logical_and(
                 prediction > 0, prediction < 21)] = 1  # object
-            prediction[prediction > 20] = 2  # part
+            prediction[np.logical_and(
+                prediction > 20, prediction < 41)] = 2  # part
+            if num_classes == 61:
+                prediction[np.logical_and(
+                    prediction > 40, prediction < 61)] = 3  # ambiguous
+
         else:
             raise ValueError(
                 '"which" value of {} not valid. Must be one of "semantic",'

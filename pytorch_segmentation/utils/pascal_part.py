@@ -10,6 +10,8 @@ import numpy as np
 
 # pylint: disable=fixme,invalid-name,missing-docstring
 
+_AMBIGUOUS_VAL = -1
+_MASK_OUT_VAL = -2
 
 def get_pascal_object_part_points(points_root, fname):
     '''
@@ -77,7 +79,7 @@ def get_point_mask(point_annotations, mask_type, size, anno_params, smooth=False
     """
     
     # Ignore all non-placed points
-    point_mask = np.zeros(size[:2], np.int32) - 2   # (-2) - mask out value # TBC- make it an argument
+    point_mask = np.zeros(size[:2], np.int32) + _MASK_OUT_VAL   # TBC - make it an argument, not MACRO
     # weights = np.zeros(size, np.float32)
     if not point_annotations:
         return point_mask  # , weights
@@ -172,11 +174,15 @@ def get_point_mask(point_annotations, mask_type, size, anno_params, smooth=False
             "mask_type 'weighted' ({}) not implemented".format(mask_type))
     
     # consensus or ambiguous
-    elif mask_type == 3:
+    elif mask_type == 3 or mask_type == 5:
         for point, answers in point_annotations.items():
             coords = point.split("_")
             i, j = int(coords[1]), int(coords[0])
-            _answers = np.array([ans for ans in answers if ans >= -1], dtype=np.int64)
+            if mask_type == 5:
+                _answers = np.array([ans for ans in answers if ans >= 0], dtype=np.int64)
+            else:
+                _answers = np.array([ans for ans in answers if ans >= -1], dtype=np.int64)
+
 
             if _answers.size < 3:    # Using only points with at least 3 answers
                 continue
@@ -185,14 +191,18 @@ def get_point_mask(point_annotations, mask_type, size, anno_params, smooth=False
                 print("+" * 100)
                 point_mask[i, j] = _answers[0]
             else:
-                point_mask[i, j] = -1   # ambiguous # TBC - make ambiguous val an argument
+                if mask_type == 3:
+                    point_mask[i, j] = _AMBIGUOUS_VAL   # ambiguous # TBC - make ambiguous val an argument
+                elif mask_type == 5:
+                    # with open('mask_type_debug', 'ab') as f:
+                    #     f.write('mask_type == 5')
+                    point_mask[i, j] = _MASK_OUT_VAL
 
-    # HERE
     elif mask_type == 4:
         for point, answers in point_annotations.items():
             coords = point.split("_")
             i, j = int(coords[1]), int(coords[0])
-            _answers = np.array([ans for ans in answers if ans >= 0], dtype=np.int64)
+            _answers = np.array([ans for ans in answers if ans >= 0], dtype=np.int64)  # ans >= -1 ?
 
             if _answers.size < 3:    # Using only points with at least 3 answers
                 continue
@@ -202,7 +212,7 @@ def get_point_mask(point_annotations, mask_type, size, anno_params, smooth=False
                 point_mask[i, j] = _answers[0]
             else:
                 if len(set(_answers)) >= 1 and len(set(answers)) <= 2:
-                    point_mask[i, j] = get_ambiguous_val_in_mask(_answers)
+                    point_mask[i, j] = get_ambiguous_val_in_mask(_answers)  # TO TEST - getting correct val?
                     print("----- [utils/pascal_part.py] ambig_val = {}, _answers[0] = {}".format(
                           point_mask[i, j], _answers[0]))
     else:
@@ -219,7 +229,12 @@ def get_point_mask(point_annotations, mask_type, size, anno_params, smooth=False
             (point_mask < anno_params['ambiguous_vals_range'][1])]
         point_mask[part_idxs] = anno_params['part_val_in_mask']
         point_mask[object_idxs] = anno_params['object_val_in_mask']
-        point_mask[ambiguous_idxs] = anno_params['ambiguous_val_in_mask']
+        # which == 'binary' and mask_type == 'consensus_or_ambiguous' ==>
+        # consensus or mask-out ("throw ambiguous points")
+        if anno_params['anno_mode'] == 'binary' and mask_type == 3:
+            point_mask[ambiguous_idxs] = _MASK_OUT_VAL    # consensus or mask-out
+        else:
+            point_mask[ambiguous_idxs] = anno_params['ambiguous_val_in_mask']
         
         # DEBUG
         print("@@@@@@@@@@@@@@@@@@@@ ambiguous_range = ({}, {})".format(

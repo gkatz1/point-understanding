@@ -15,7 +15,7 @@ from ..utils.pascal_voc import convert_pascal_berkeley_augmented_mat_annotations
 from ..utils.pascal_part import get_pascal_object_part_points, get_point_mask
 
 _MASKTYPE = {'mode': 0, 'consensus': 1, 'weighted': 2, 'consensus_or_ambiguous': 3,
-             '61-way': 4}
+             '61-way': 4, 'consensus_or_mask_out': 5}
 _OBJECT_VAL_IN_MASK = 0
 _PART_VAL_IN_MASK = 1
 _AMBIGUOUS_VAL_IN_MASK = 2
