@@ -149,7 +149,7 @@ def main(args):
     loss_type = args.loss_type
     assert loss_type in ['1_loss', '2_losses_combined', 'semseg_only']
     compression_method = args.compression_method
-    assert compression_method in ['gt', 'sum', 'predicted_label']
+    assert compression_method in ['gt', 'sum', 'predicted_label', 'none']
     dump_output_images = args.dump_output_images
 
     # **************************************
@@ -236,8 +236,16 @@ def main(args):
 
     if merge_level == 'binary':
         number_of_objpart_classes = 2
+        compression_method = 'none'
+        if output_predicted_images:
+            if which_vis_type == 'objpart':
+                which_vis_type = 'separated'
     elif merge_level == 'trinary':
         number_of_objpart_classes = 3
+        compression_method = 'none'
+        if output_predicted_images:
+            if which_vis_type == 'objpart':
+                which_vis_type = 'separated'
     elif merge_level == '61-way':
         number_of_objpart_classes = 1
         print("network_dims: {}".format(network_dims))
@@ -322,7 +330,7 @@ def main(args):
     if validate_first or validate_only:
         print("=> Validating network")
         sc1, sc2, sc3 = validate(
-            net, valset_loader, (objpart_labels, semantic_labels), merge_level)
+            net, valset_loader, (objpart_labels, semantic_labels), compression_method)
         print("results:\nobjpart mIoU = {}\nsemantic mIoU = {}\n".format(sc1, sc2) + 
               "overall objpart accuracy = {}".format(sc3))
 
@@ -333,7 +341,7 @@ def main(args):
     writer.close()
 
 
-def validate(net, loader, labels, merge_level):
+def validate(net, loader, labels, compression_method):
     ''' Computes mIoU for``net`` over the a set.
         args::
             :param ``net``: network (in this case resnet34_8s_dilated
@@ -346,10 +354,6 @@ def validate(net, loader, labels, merge_level):
     net.eval()
     # hardcoded in for the object-part infernce
     # TODO: change to be flexible/architecture-dependent
-    if merge_level == 'binary' or merge_level == 'trinary':     # GILAD
-        no_parts = []
-    else:
-        no_parts = [0, 4, 9, 11, 18, 20, 24, 29, 31, 38, 40]
 
     objpart_labels, semantic_labels = labels
 
@@ -363,6 +367,9 @@ def validate(net, loader, labels, merge_level):
             tqdm.tqdm(loader)):
         image = Variable(image.cuda())
         objpart_logits, semantic_logits = net(image)
+        print("objpart.size = {}, sem.size = {}".format(objpart_logits.size(), semantic_logits.size()))
+        if i == 0:
+            num_objpart_classes = objpart_logits.size()[-1]
         
         print("[#] DEBUG: train.py, validate()")
 
@@ -371,7 +378,8 @@ def validate(net, loader, labels, merge_level):
             semantic_logits, semantic_anno)
         # objpart_pred_np, objpart_anno_np = numpyify_logits_and_annotations(
         #     objpart_logits, objpart_anno)
-        if merge_level == 'binary' or merge_level == 'trinary':     # GILAD
+        if compression_method == 'none':     # GILAD
+
             objpart_pred_np, objpart_anno_np = numpyify_logits_and_annotations(
                     objpart_logits, objpart_anno)
         # elif merge_level == '61-way':
@@ -418,6 +426,11 @@ def validate(net, loader, labels, merge_level):
         if i % showevery == 1:
             tqdm.tqdm.write(
                 "Object-part accuracy ({}):\t{:%}".format(i, gt_right / gt_total))
+
+    if num_objpart_classes == 2 or num_objpart_classes == 3:     # GILAD
+        no_parts = []
+    else:
+        no_parts = [0, 4, 9, 11, 18, 20, 24, 29, 31, 38, 40]
 
     # Semantic segmentation task
     semantic_IoU = get_iou(
@@ -650,7 +663,8 @@ def train(train_params):
                     semseg_logits=semantic_logits_to_compression)
 
             if len(_op_log_flt_vld) > 0:
-                if merge_level == 'binary' or merge_level == 'trinary':
+                # if merge_level == 'binary' or merge_level == 'trinary' or True:  # exp_33, exp_34
+                if compression_method != 'none':
                     _, logits_toscore = torch.max(_op_log_flt_vld, dim=1)
                     correct_idxs = np.nonzero(logits_toscore.data == _op_anno_flt_vld.data)
                     this_correct_points = torch.sum(logits_toscore == _op_anno_flt_vld).float().data[0]
@@ -670,7 +684,7 @@ def train(train_params):
                
                 else:
                     _, logits_toscore = torch.max(_op_log_flt_vld, dim=1)
-                    _ind_ = torch.gt(_op_anno_flt_vld, 0)
+                    _ind_ = torch.gt(_op_anno_flt_vld, 0)   # why is this? if we don't compress, 0 is the bg, don't use it
                     op_pred_gz = logits_toscore[_ind_]
                     _op_anno_gz = _op_anno_flt_vld[_ind_]
                     print("!! (op_pred_gz == _op_anno_gz).sum().data[0] = {}".format(torch.sum(op_pred_gz == _op_anno_gz).data[0]))
@@ -810,7 +824,7 @@ def train(train_params):
         (curr_op_valscore,
          curr_sem_valscore,
          curr_op_gt_valscore) = validate(
-             net, valset_loader, (objpart_labels, semantic_labels), merge_level)
+             net, valset_loader, (objpart_labels, semantic_labels), compression_method)
         writer.add_scalar('validation/semantic_validation_mIoU',
                           curr_sem_valscore, epoch)
         writer.add_scalar('validation/objpart_validation_mIoU',

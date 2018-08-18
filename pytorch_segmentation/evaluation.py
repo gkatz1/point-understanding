@@ -259,7 +259,9 @@ def outputs_tonp_gt(logits, anno, op_map, flatten=True):
     _logits = logits.data.cpu()
     anno_np = anno.numpy()
     predictions = np.zeros_like(anno_np)
-    num_classes = logits.size()[-1]
+    num_classes = logits.size()[1]
+    print("[outputs_tonp_gt] num_classes = {}".format(num_classes))
+    print("[outputs_tonp_gt] logits.size = {}".format(logits.size()))
     # for index, anno_ind in np.ndenumerate(anno_np):
     for index in zip(*np.where(np.logical_and(anno_np > 0, anno_np != 255))):
         anno_ind = anno_np[index]
@@ -340,7 +342,8 @@ def compress_objpart_logits(logits, anno, op_map, method="gt", semseg_logits=Non
     returns::
         compressed tensor of shape (N, 2)
     '''
-    print("[compress_objpart_logits] op_map = {}".format(op_map))
+    if method == 'none':
+        return logits, anno
 
     anno = anno.data.cpu()
 
@@ -926,6 +929,48 @@ def validate_and_output_images(net, loader, op_map,
       40: "tvmonitor_part"
 
     '''
+    def save_visualization(image, prediction, im_idx):
+        i = im_idx  
+        image_copy = image.numpy().squeeze(0).transpose(1, 2, 0)
+        image_copy = image_copy.astype(np.float32)
+        image_copy -= image_copy.min()
+        image_copy /= image_copy.max()
+        # image_copy*=255
+        prediction = prediction.squeeze(0)
+        cmask = np.zeros_like(image_copy, dtype=np.float32)
+        classes = np.unique(prediction)
+        # sz = prediction.size
+        for cls in classes:
+            if cls <= 0:
+                continue
+            ind = prediction == cls
+            cmask[ind, :] = cmap[cls]
+            print("cls = {}, cmap[cls] = {}".format(cls, cmap[cls]))
+         
+        cmask = cmask.astype(np.float32) / cmask.max()
+        ind = prediction > 0
+        image_copy[ind] = image_copy[ind] * \
+            (1.0 - alpha) + cmask[ind] * (float(alpha))
+        image_copy = image_copy - image_copy.min()
+        image_copy = image_copy / np.max(image_copy)
+        image_copy = image_copy * 255
+        image_copy = image_copy.astype(np.uint8)
+        print("image_copy.shape = {}".format(image_copy.shape))
+        image_copy_torch_tensor = image_copy.transpose(2, 0, 1)
+        image_copy_torch_tensor = torch.from_numpy(image_copy)
+       
+        if writer is not None:
+            writer.add_image('images/image_{}'.format(i), image_copy, step_num)
+        
+        base_path = "predictions/" 
+        image_copy = Image.fromarray(image_copy)
+        if not os.path.isdir("{}{}/".format(base_path, save_name)):
+            os.makedirs("{}{}/".format(base_path, save_name))
+
+        image_copy.save("{}{}/validation_{}_{}.png".format(base_path, save_name, which, i))
+        image_copy.close()
+        # hxwx(rgb)
+
     if which is None or which == 'None':
         which = 'semantic'
 
@@ -941,7 +986,8 @@ def validate_and_output_images(net, loader, op_map,
     for image, semantic_anno, objpart_anno in tqdm.tqdm(loader):
         img = Variable(image.cuda())
         objpart_logits, semantic_logits = net(img)
-        num_classes = objpart_logits.size()[-1]
+        num_classes = objpart_logits.size()[1]
+        print("objpart_logits.size = {}".format(objpart_logits.size()))
 
         # First we do argmax on gpu and then transfer it to cpu
         if which == 'semantic':
@@ -970,43 +1016,21 @@ def validate_and_output_images(net, loader, op_map,
                 '"objpart"'.format(which))
         print("[evaluation.py, 704] squeezed image shape = {}".format(
                 image.numpy().squeeze(0).shape))
-        
-        image_copy = image.numpy().squeeze(0).transpose(1, 2, 0)
-        image_copy = image_copy.astype(np.float32)
-        image_copy -= image_copy.min()
-        image_copy /= image_copy.max()
-        # image_copy*=255
-        prediction = prediction.squeeze(0)
-        cmask = np.zeros_like(image_copy, dtype=np.float32)
-        classes = np.unique(prediction)
-        # sz = prediction.size
-        for cls in classes:
-            if cls <= 0:
-                continue
-            ind = prediction == cls
-            cmask[ind, :] = cmap[cls]
 
-        cmask = cmask.astype(np.float32) / cmask.max()
-        ind = prediction > 0
-        image_copy[ind] = image_copy[ind] * \
-            (1.0 - alpha) + cmask[ind] * (float(alpha))
-        image_copy = image_copy - image_copy.min()
-        image_copy = image_copy / np.max(image_copy)
-        image_copy = image_copy * 255
-        image_copy = image_copy.astype(np.uint8)
-        print("image_copy.shape = {}".format(image_copy.shape))
-        image_copy_torch_tensor = image_copy.transpose(2, 0, 1)
-        image_copy_torch_tensor = torch.from_numpy(image_copy)
-       
-        if writer is not None:
-            writer.add_image('images/image_{}'.format(i), image_copy, step_num)
-        
-        base_path = "predictions/" 
-        image_copy = Image.fromarray(image_copy)
-        if not os.path.isdir("{}{}/".format(base_path, save_name)):
-            os.makedirs("{}{}/".format(base_path, save_name))
+        if i == 0:
+            # output legend - 1 image for each class color
+            for cls in range(num_classes):
+                pred_copy = np.zeros_like(prediction, dtype=np.uint8)
+                pred_copy.fill(cls)
+                max_val = torch.max(image)
+                try:
+                    max_val = max_val[0]
+                except:
+                    pass
+                # white_image = torch.Tensor([max_val]).expand(image.size())
+                # white_image[0,0,0] = 0
+                save_visualization(image, pred_copy, 'class_{}'.format(cls))
 
-        image_copy.save("{}{}/validation_{}_{}.png".format(base_path, save_name, which, i))
+        save_visualization(image, prediction, i)
+
         i += 1
-        image_copy.close()
-        # hxwx(rgb)
