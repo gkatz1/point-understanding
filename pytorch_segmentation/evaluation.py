@@ -7,6 +7,7 @@ import os
 import shutil
 import tqdm
 import numpy as np
+import json
 import torch
 import torch.nn as nn
 import torch.optim as optim
@@ -27,6 +28,8 @@ from .transforms import (ComposeJoint,
                          RandomHorizontalFlipJoint,
                          RandomCropJoint)
 from .losses import CrossEntropyLossElementwise
+from .utils.pascal_part import get_valid_circle_indices
+
 
 # pylint: disable=too-many-arguments, invalid-name, len-as-condition,
 # pylint: disable=too-many-locals, too-many-branches,too-many-statements
@@ -66,7 +69,8 @@ def poly_lr_scheduler(optimizer, init_lr, iteration, lr_decay_iter=1,
 def get_training_loaders(dataset_dir, network_dims, batch_size=8,
                          num_workers=4,
                          mask_type = {'train': "consensus", 'val': "consensus"},
-                         which='binary'):
+                         which='binary',
+                         validate_and_output_im=False):
     '''Returns loaders for the training set.
         args:
             :param ``network_dims``: ``dict`` which will
@@ -138,7 +142,24 @@ def get_training_loaders(dataset_dir, network_dims, batch_size=8,
     valset_loader = torch.utils.data.DataLoader(valset, batch_size=1,
                                                 shuffle=False, num_workers=2)
 
-    return (trainloader, trainset), (valset_loader, valset)
+    valset_for_output_im = None
+    valset_for_output_im_loader = None
+    if validate_and_output_im:
+        valset_for_output_im = PascalVOCSegmentation(dataset_dir,
+                                       network_dims={},
+                                       train=False,
+                                       download=False,
+                                       joint_transform=valid_transform,
+                                       mask_type=mask_type['val'],
+                                       which=which,
+                                       return_imid=True)
+
+        valset_for_output_im_loader = torch.utils.data.DataLoader(valset_for_output_im, batch_size=1,
+                                                    shuffle=False, num_workers=2)
+   
+        
+
+    return (trainloader, trainset), (valset_loader, valset), (valset_for_output_im_loader, valset_for_output_im)
 
 
 def flatten_logits(logits, number_of_classes):
@@ -389,7 +410,7 @@ def compress_objpart_logits(logits, anno, op_map, method="gt", semseg_logits=Non
 
     print("^" * 50 + "compress_logits, method = {}".format(method))
 
-    num_classes = logits.size()[-1] 
+    num_classes = logits.size()[-1]
     indices = []
     new_anno = []
     for _, label in enumerate(anno):
@@ -867,7 +888,6 @@ def get_network_and_optimizer(
 def get_cmap():
     ''' Return a colormap stored on disk
     '''
-    import json
     fname = os.path.join(
         os.path.dirname(
             os.path.realpath(__file__)),
@@ -879,7 +899,7 @@ def get_cmap():
 
 def validate_and_output_images(net, loader, op_map,
                                which='semantic', alpha=0.6, writer=None,
-                               step_num=0, save_name='output_images'):
+                               step_num=0, base_path='prediction/', save_name='output_images'):
     ''' Computes mIoU for``net`` over the a set.
         args:: :param ``net``: network (in this case resnet34_8s_dilated
             :param ``loader``: dataloader (in this case, validation set loader)
@@ -929,6 +949,8 @@ def validate_and_output_images(net, loader, op_map,
       40: "tvmonitor_part"
 
     '''
+    _MASK_OUT_VAL = -2
+
     def save_visualization(image, prediction, im_idx):
         i = im_idx  
         image_copy = image.numpy().squeeze(0).transpose(1, 2, 0)
@@ -936,7 +958,10 @@ def validate_and_output_images(net, loader, op_map,
         image_copy -= image_copy.min()
         image_copy /= image_copy.max()
         # image_copy*=255
-        prediction = prediction.squeeze(0)
+        print("prediction in save_vis: ")
+        print( prediction)
+        prediction = prediction.squeeze()
+        # prediction = prediction.reshape(prediction.size[1:])
         cmask = np.zeros_like(image_copy, dtype=np.float32)
         classes = np.unique(prediction)
         # sz = prediction.size
@@ -962,7 +987,6 @@ def validate_and_output_images(net, loader, op_map,
         if writer is not None:
             writer.add_image('images/image_{}'.format(i), image_copy, step_num)
         
-        base_path = "predictions/" 
         image_copy = Image.fromarray(image_copy)
         if not os.path.isdir("{}{}/".format(base_path, save_name)):
             os.makedirs("{}{}/".format(base_path, save_name))
@@ -980,14 +1004,17 @@ def validate_and_output_images(net, loader, op_map,
     # no_parts = [0, 4, 9, 11, 18, 20, 24, 29, 31, 38, 40]
     # objpart_labels, semantic_labels = labels
     cmap = get_cmap()
+    prediction_dict = dict()
+    save_images_with_pt_anno_only = True
+    paint_points_only = True
 
-    # valset_loader
     i = 0
-    for image, semantic_anno, objpart_anno in tqdm.tqdm(loader):
+    for image, semantic_anno, objpart_anno, imid in tqdm.tqdm(loader):
+        imid = imid[0]
+        print("imid = {}".format(imid))
         img = Variable(image.cuda())
         objpart_logits, semantic_logits = net(img)
         num_classes = objpart_logits.size()[1]
-        print("objpart_logits.size = {}".format(objpart_logits.size()))
 
         # First we do argmax on gpu and then transfer it to cpu
         if which == 'semantic':
@@ -1007,7 +1034,7 @@ def validate_and_output_images(net, loader, op_map,
                 prediction > 20, prediction < 41)] = 2  # part
             if num_classes == 61:
                 prediction[np.logical_and(
-                    prediction > 40, prediction < 61)] = 3  # ambiguous
+                    prediction > 40, prediction < 61)] = 3  # ambiguous  
 
         else:
             raise ValueError(
@@ -1017,6 +1044,50 @@ def validate_and_output_images(net, loader, op_map,
         print("[evaluation.py, 704] squeezed image shape = {}".format(
                 image.numpy().squeeze(0).shape))
 
+        print("objpart_logits.size = {}".format(objpart_logits.size()))
+        print("objpart_anno.size = {}".format(objpart_anno.size()))
+        print("objpart_anno not -2 = {}".format(torch.nonzero(objpart_anno != -2)))
+        print("prediction.size = {}".format(prediction.shape))
+        # raise NotImplementedError()
+        
+        # if points_only:
+        if paint_points_only:
+            r = 3
+            # mask out prediction to contain only points with annotation - mask out the rest
+            # also paint a little circle around the pixel - otherwise can't see it
+            objpart_anno = objpart_anno.squeeze()
+            prediction = prediction.squeeze()
+            not_annotated = torch.nonzero(objpart_anno == _MASK_OUT_VAL)
+            not_annotated_np = not_annotated.numpy()
+            rows, cols = zip(*not_annotated_np)
+            prediction[rows, cols] = _MASK_OUT_VAL  # visualize only annotated points
+            # ch, rows, cols = zip(*np.where(prediction != _MASK_OUT_VAL))
+            print(zip(*np.where(prediction != _MASK_OUT_VAL)))
+            annotated_pts_indices = zip(*np.where(prediction != _MASK_OUT_VAL))
+            print("annotated_pts_indices")
+            print(annotated_pts_indices)
+            print(type(annotated_pts_indices))
+            print(annotated_pts_indices == [])
+
+            pt_dict = dict()
+            for pt in annotated_pts_indices:
+                # "x_y": [gt_value, predicted_value]
+                pt_dict["{}_{}".format(pt[1], pt[0])] = [objpart_anno[pt[0], pt[1]],
+                    prediction[pt[0], pt[1]]]  # x,y
+                # paint circle with same value, for a clear view of the point in visualization
+                indices = get_valid_circle_indices(prediction, (pt[0], pt[1]), r)
+                print("=== indices ===")
+                print(len(indices[0]))
+                print(type(indices), type(indices[0]))
+                print(indices)
+                prediction[indices[0], indices[1]] = prediction[pt[0], pt[1]]
+                print(prediction[indices[0], indices[1]])
+
+            if annotated_pts_indices != []:
+                prediction_dict[imid] = pt_dict.copy() 
+
+ 
+            # now for each annotated point - paint a circle around it
         if i == 0:
             # output legend - 1 image for each class color
             for cls in range(num_classes):
@@ -1030,7 +1101,17 @@ def validate_and_output_images(net, loader, op_map,
                 # white_image = torch.Tensor([max_val]).expand(image.size())
                 # white_image[0,0,0] = 0
                 save_visualization(image, pred_copy, 'class_{}'.format(cls))
-
-        save_visualization(image, prediction, i)
+        
+        # if save_images_with_pt_anno_only:   # only images with point annotation
+        #     if annotated_pts_indices != []:
+        #         save_visualization(image, prediction, i)
+        # else:
+        #     save_visualization(image, prediction, i)
 
         i += 1
+
+    print(prediction_dict)
+    json_path = "{}{}/predictions.json".format(base_path, save_name)
+    with open(json_path, 'w') as f:
+        json.dump(prediction_dict, f)
+

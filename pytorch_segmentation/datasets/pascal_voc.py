@@ -93,7 +93,8 @@ class PascalVOCSegmentation(data.Dataset):
                  split_mode=2,
                  merge_mode="objpart",
                  mask_type="consensus",
-                 which='binary'):
+                 which='binary',
+                 return_imid=False):
         ''' Returns label_attrs: a dictionary of the number of parts associated
         with each semantic part in the dataset. This is used for defining the
         output dimensions of the network.
@@ -121,6 +122,8 @@ class PascalVOCSegmentation(data.Dataset):
             self.root, self.BERKELEY_ROOT_FOLDER_NAME)
 
         self.joint_transform = joint_transform
+
+        self.return_imid = return_imid
 
         if download:
             self._download_dataset()
@@ -191,8 +194,11 @@ class PascalVOCSegmentation(data.Dataset):
         if self.joint_transform is not None:
             _img, _semantic_target, _point_target = self.joint_transform(
                 [_img, _semantic_target, _point_target])
-
-        return _img, _semantic_target, _point_target  # , _weights
+        
+        if self.return_imid:
+            return  _img, _semantic_target, _point_target, imid # , _weights
+        else:
+            return _img, _semantic_target, _point_target  # , _weights
 
     def _download_dataset(self):
 

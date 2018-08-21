@@ -230,9 +230,9 @@ def main(args):
     print("=> Getting training and validation loaders")
     print(DATASET_DIR)
     network_dims = {}
-    (trainloader, trainset), (valset_loader, _) = get_training_loaders(
+    (trainloader, trainset), (valset_loader, _), (valset_for_output_im_loader, _) = get_training_loaders(
         DATASET_DIR, network_dims, batch_size,
-        num_workers, mask_type, merge_level)
+        num_workers, mask_type, merge_level, validate_and_output_im=output_predicted_images)
 
     if merge_level == 'binary':
         number_of_objpart_classes = 2
@@ -313,7 +313,7 @@ def main(args):
     if output_predicted_images:
         print("=> Outputting predicted images to folder 'predictions'")
         validate_and_output_images(  
-            net, valset_loader, op_map, which=which_vis_type, alpha=0.7, writer=writer,
+            net, valset_for_output_im_loader, op_map, which=which_vis_type, alpha=0.7, writer=writer,
              step_num=0, save_name=save_model_name)
         while True:
             resp = raw_input("=> Done. Do you wish to continue training? (y/n):\t")
