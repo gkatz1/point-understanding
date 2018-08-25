@@ -950,8 +950,9 @@ def validate_and_output_images(net, loader, op_map,
 
     '''
     _MASK_OUT_VAL = -2
-
-    def save_visualization(image, prediction, im_idx):
+    point_small_region_val = 99
+    point_small_region_color = [0, 0, 0]
+    def save_visualization(image, prediction, im_idx, imid):
         i = im_idx  
         image_copy = image.numpy().squeeze(0).transpose(1, 2, 0)
         image_copy = image_copy.astype(np.float32)
@@ -970,12 +971,20 @@ def validate_and_output_images(net, loader, op_map,
                 continue
             ind = prediction == cls
             cmask[ind, :] = cmap[cls]
+            if cls == point_small_region_val:
+                cmask[ind, :] = cmask[ind, :] * (float(alpha)) + \
+                    cmask[ind, :] * point_small_region_color * (1 - alpha)
             print("cls = {}, cmap[cls] = {}".format(cls, cmap[cls]))
          
         cmask = cmask.astype(np.float32) / cmask.max()
         ind = prediction > 0
         image_copy[ind] = image_copy[ind] * \
-            (1.0 - alpha) + cmask[ind] * (float(alpha))
+            (1.0 - alpha) + cmask[ind] * (float(alpha))  
+        print("shapes") 
+        print(image_copy.shape, cmask.shape, image_copy[ind].shape, cmask[ind].shape, ind.shape)
+#         ind_larger_region = prediction == point_small_region_val
+#         image_copy[ind_larger_region] = image_copy[ind] * \
+#             (1.0 - alpha) + np * (float(alpha))    # multiply by larger_region_color
         image_copy = image_copy - image_copy.min()
         image_copy = image_copy / np.max(image_copy)
         image_copy = image_copy * 255
@@ -985,7 +994,7 @@ def validate_and_output_images(net, loader, op_map,
         image_copy_torch_tensor = torch.from_numpy(image_copy)
        
         if writer is not None:
-            writer.add_image('images/image_{}'.format(i), image_copy, step_num)
+            writer.add_image('images/image_{}_{}'.format(i, imid), image_copy, step_num)
         
         image_copy = Image.fromarray(image_copy)
         if not os.path.isdir("{}{}/".format(base_path, save_name)):
@@ -1007,6 +1016,9 @@ def validate_and_output_images(net, loader, op_map,
     prediction_dict = dict()
     save_images_with_pt_anno_only = True
     paint_points_only = True
+    paint_points_and_region = True
+    annotated_pts_indices = []
+    dump_semantic_pred = True
 
     i = 0
     for image, semantic_anno, objpart_anno, imid in tqdm.tqdm(loader):
@@ -1023,6 +1035,9 @@ def validate_and_output_images(net, loader, op_map,
         elif which == 'separated':
             prediction, _ = numpyify_logits_and_annotations(
                 objpart_logits, objpart_anno, flatten=False)
+        elif which == 'separated_use_gt':
+            prediction, _ = outputs_tonp_gt(
+                objpart_logits, semantic_anno, op_map, flatten=False)
         elif which == 'objpart':
             # prediction, anno = outputs_tonp_gt(
             #     objpart_logits, objpart_anno,semantic_anno, flatten=False)
@@ -1041,6 +1056,11 @@ def validate_and_output_images(net, loader, op_map,
                 '"which" value of {} not valid. Must be one of "semantic",'
                 '"separated", or'
                 '"objpart"'.format(which))
+
+        if dump_semantic_pred:
+            semantic_pred, _ = numpyify_logits_and_annotations(
+                semantic_logits, semantic_anno, flatten=False)
+
         print("[evaluation.py, 704] squeezed image shape = {}".format(
                 image.numpy().squeeze(0).shape))
 
@@ -1051,37 +1071,71 @@ def validate_and_output_images(net, loader, op_map,
         # raise NotImplementedError()
         
         # if points_only:
-        if paint_points_only:
-            r = 3
+        if paint_points_only or paint_points_and_region:
+            r_small = 2
+            r_large = 7
             # mask out prediction to contain only points with annotation - mask out the rest
             # also paint a little circle around the pixel - otherwise can't see it
             objpart_anno = objpart_anno.squeeze()
             prediction = prediction.squeeze()
+            annotated_pts = torch.nonzero(objpart_anno != _MASK_OUT_VAL)
+            annotated_pts_indices = annotated_pts.numpy()
             not_annotated = torch.nonzero(objpart_anno == _MASK_OUT_VAL)
             not_annotated_np = not_annotated.numpy()
             rows, cols = zip(*not_annotated_np)
+            if paint_points_and_region and annotated_pts_indices.size != 0:
+                # rows, col <- not_annotated & not_in_region
+                region_rows = []
+                region_cols = []
+                for pt in annotated_pts:
+                    cur_region_rows, cur_region_cols = get_valid_circle_indices(
+                        prediction, (pt[0], pt[1]), r_large) # circle with larger raduis
+                    region_rows += cur_region_rows
+                    region_cols += cur_region_cols
+                    print("region_rows, region_cols")
+                    print(len(cur_region_rows), len(cur_region_cols))
+                print(len(rows), len(cols))
+                a1 = np.array(zip(rows, cols))
+                a2 = np.array(zip(region_rows, region_cols))
+                print(region_rows, region_cols)
+                print(annotated_pts_indices.size == 0)
+                print("shapes ", a1.shape, a2.shape)
+                a1_rows = a1.view([('', a1.dtype)] * a1.shape[1])
+                a2_rows = a2.view([('', a2.dtype)] * a2.shape[1])
+                rows, cols = zip(*np.setdiff1d(a1_rows, a2_rows).view(a1.dtype).reshape(-1, a1.shape[1]))
+                # rows, cols = np.setdiff1d(zip(rows,cols), zip(region_rows,region_cols)).squeeze()
+                # rows = np.setdiff1d(rows, region_rows).squeeze()
+                # cols = np.setdiff1d(cols, region_cols).squeeze()
             prediction[rows, cols] = _MASK_OUT_VAL  # visualize only annotated points
             # ch, rows, cols = zip(*np.where(prediction != _MASK_OUT_VAL))
             print(zip(*np.where(prediction != _MASK_OUT_VAL)))
-            annotated_pts_indices = zip(*np.where(prediction != _MASK_OUT_VAL))
             print("annotated_pts_indices")
-            print(annotated_pts_indices)
+            # print(annotated_pts_indices)
             print(type(annotated_pts_indices))
-            print(annotated_pts_indices == [])
 
             pt_dict = dict()
             for pt in annotated_pts_indices:
                 # "x_y": [gt_value, predicted_value]
-                pt_dict["{}_{}".format(pt[1], pt[0])] = [objpart_anno[pt[0], pt[1]],
-                    prediction[pt[0], pt[1]]]  # x,y
-                # paint circle with same value, for a clear view of the point in visualization
-                indices = get_valid_circle_indices(prediction, (pt[0], pt[1]), r)
+                if dump_semantic_pred:
+                    semantic_anno, semantic_pred = semantic_anno.squeeze(), semantic_pred.squeeze()
+                    print("debug, dump_semantic_pred, shapes:")
+                    print(objpart_anno.size(), prediction.shape, semantic_anno.size(), semantic_pred.shape)
+                    pt_dict["{}_{}".format(pt[1], pt[0])] = [objpart_anno[pt[0], pt[1]],
+                        prediction[pt[0], pt[1]], semantic_anno[pt[0], pt[1]], semantic_pred[pt[0], pt[1]]]  # x,y
+                else:
+                    pt_dict["{}_{}".format(pt[1], pt[0])] = [objpart_anno[pt[0], pt[1]],
+                        prediction[pt[0], pt[1]]]  # x,y
+
+                # paint circle with same value, for a clear view of the point in visualizationi
+                indices = get_valid_circle_indices(prediction, (pt[0], pt[1]), r_small)
                 print("=== indices ===")
                 print(len(indices[0]))
                 print(type(indices), type(indices[0]))
-                print(indices)
-                prediction[indices[0], indices[1]] = prediction[pt[0], pt[1]]
-                print(prediction[indices[0], indices[1]])
+                # print(indices)
+                if not paint_points_and_region:
+                    prediction[indices[0], indices[1]] = prediction[pt[0], pt[1]]
+
+                    print(prediction[indices[0], indices[1]])
 
             if annotated_pts_indices != []:
                 prediction_dict[imid] = pt_dict.copy() 
@@ -1100,14 +1154,15 @@ def validate_and_output_images(net, loader, op_map,
                     pass
                 # white_image = torch.Tensor([max_val]).expand(image.size())
                 # white_image[0,0,0] = 0
-                save_visualization(image, pred_copy, 'class_{}'.format(cls))
+                save_visualization(image, pred_copy, 'class_{}'.format(cls), '')
         
-        # if save_images_with_pt_anno_only:   # only images with point annotation
-        #     if annotated_pts_indices != []:
-        #         save_visualization(image, prediction, i)
-        # else:
-        #     save_visualization(image, prediction, i)
+        if save_images_with_pt_anno_only:   # only images with point annotation
+            if annotated_pts_indices != []:
+                save_visualization(image, prediction, i, imid)
+        else:
+            save_visualization(image, prediction, i, imid)
 
+            
         i += 1
 
     print(prediction_dict)
