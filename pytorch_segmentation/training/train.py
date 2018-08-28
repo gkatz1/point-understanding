@@ -13,6 +13,7 @@ import argparse
 import datetime
 import tqdm
 import csv
+import json
 
 import tensorboardX
 import torch
@@ -24,6 +25,7 @@ from torch.autograd import Variable
 # from PIL import Image
 import numpy as np
 from sklearn.metrics import confusion_matrix
+from collections import Counter
 
 # Allow for access to the modified torchvision library and
 # various datasets
@@ -50,7 +52,31 @@ from pytorch_segmentation.evaluation import (
     save_checkpoint,
     validate_and_output_images,
     get_network_and_optimizer)
-
+  
+  
+CLASS_NAMES = [
+    'background',
+    'aeroplane',
+    'bicycle',
+    'bird',
+    'boat',
+    'bottle',
+    'bus',
+    'car',
+    'cat',
+    'chair',
+    'cow',
+    'diningtable',
+    'dog',
+    'horse',
+    'motorbike',
+    'person',
+    'potted-plant',
+    'sheep',
+    'sofa',
+    'train',
+    'tvmonitor'
+]
 
 def str2bool(v):
     ''' Helper for command line args.
@@ -97,6 +123,13 @@ def load_dump_file_params(dump_file_path):
     return saved_params
 
 
+def get_class_numeric_val(cls):
+    if cls not in CLASS_NAMES or cls == CLASS_NAMES[0]:
+        raise ValueError("Invalid class name")
+    numeric_val = CLASS_NAMES.index(cls)
+    return numeric_val
+
+
 def main(args):
     '''
     main(): Primary function to manage the training.
@@ -117,7 +150,7 @@ def main(args):
     num_workers = args.num_workers
     which_vis_type = args.paint_images
     print(which_vis_type)
-    assert which_vis_type in [None, 'None', 'objpart', 'semantic', 'separated']
+    assert which_vis_type in [None, 'None', 'objpart', 'semantic', 'separated', 'separated_use_gt']
     merge_level = args.part_grouping
     assert merge_level in ['binary', 'trinary','sparse', 'merged', '61-way']
     mask_type = args.mask_type
@@ -149,8 +182,15 @@ def main(args):
     loss_type = args.loss_type
     assert loss_type in ['1_loss', '2_losses_combined', 'semseg_only']
     compression_method = args.compression_method
-    assert compression_method in ['gt', 'sum', 'predicted_label', 'none']
+    assert compression_method in ['gt', 'sum', 'use_semseg_prediction', 'max_of_all',
+        'by_given_class', 'none']
     dump_output_images = args.dump_output_images
+    spatial_average = args.spatial_average
+    compress = args.compress
+    force_binary = args.force_binary
+    class_to_compress_by = args.class_to_compress_by
+    if compression_method == 'by_given_class':
+        class_to_compress_by = get_class_numeric_val(class_to_compress_by)
 
     # **************************************
     time_now = datetime.datetime.now().strftime("%Y_%m_%d_%H_%M")
@@ -253,11 +293,15 @@ def main(args):
             number_of_objpart_classes += network_dims[k]
             if int(k) <= max_object_label:
                 number_of_objpart_classes += 1
+        if compression_method == 'none':
+            compression_method = 'max_of_all'
     else:
         number_of_objpart_classes = 1  # 1 for background...
         print("network_dims: {}".format(network_dims))
         for k in network_dims:
             number_of_objpart_classes += 1 + network_dims[k]
+        if compression_method == 'none':
+            compression_method = 'max_of_all'
 
     objpart_labels = range(number_of_objpart_classes)
     print("Training for {} objpart categories".format(
@@ -284,13 +328,26 @@ def main(args):
     writer = tensorboardX.SummaryWriter(os.path.join('runs', experiment_name))
     if _start_epoch is not None:
         train_params['start_epoch'] = _start_epoch
+
+
+    eval_results_dir_path = 'eval_results'
+    validate_params = {
+        'loader' : valset_loader,
+        'labels' : (objpart_labels, semantic_labels),
+        'compression_method' : compression_method,
+        'compress' : compress,
+        'force_binary' : force_binary,
+        'class_to_compress_by' : class_to_compress_by,
+        'results_dir_path' : eval_results_dir_path
+    }
+
     train_params.update({
         'net': net,
         'optimizer': optimizer,
         'epochs_to_train': epochs_to_train,
         'trainloader': trainloader,
         'trainset': trainset,
-        'valset_loader': valset_loader,
+        # 'valset_loader': valset_loader,
         'init_lr': init_lr,
         'writer': writer,
         'validate_batch_frequency': validate_batch_frequency,
@@ -305,8 +362,11 @@ def main(args):
         'objpart_weight' : objpart_weight,
         'loss_type' : loss_type,
         'compression_method' : compression_method,
-        'dump_output_images' : dump_output_images
+        'dump_output_images' : dump_output_images,
+        'spatial_average' : spatial_average,
+        'validate_params' : validate_params
     })
+
 
     op_map = net.flat_map     # GILAD
 
@@ -329,8 +389,7 @@ def main(args):
 
     if validate_first or validate_only:
         print("=> Validating network")
-        sc1, sc2, sc3 = validate(
-            net, valset_loader, (objpart_labels, semantic_labels), compression_method)
+        sc1, sc2, sc3 = validate(net, validate_params)
         print("results:\nobjpart mIoU = {}\nsemantic mIoU = {}\n".format(sc1, sc2) + 
               "overall objpart accuracy = {}".format(sc3))
 
@@ -341,7 +400,7 @@ def main(args):
     writer.close()
 
 
-def validate(net, loader, labels, compression_method):
+def validate(net, validate_params):
     ''' Computes mIoU for``net`` over the a set.
         args::
             :param ``net``: network (in this case resnet34_8s_dilated
@@ -350,6 +409,15 @@ def validate(net, loader, labels, compression_method):
         returns the mIoU (ignoring classes where no parts were annotated) for
         the semantic segmentation task and object-part inference task.
     '''
+    loader = validate_params['loader']
+    labels = validate_params['labels']
+    compression_method = validate_params['compression_method']
+    compress = validate_params['compress']
+    force_binary = validate_params['force_binary']
+    class_to_compress_by = validate_params['class_to_compress_by']
+    results_dir_path = validate_params['results_dir_path']
+    if not os.path.isdir(results_dir_path):
+        os.makedirs(results_dir_path)    
 
     net.eval()
     # hardcoded in for the object-part infernce
@@ -362,32 +430,43 @@ def validate(net, loader, labels, compression_method):
     gt_total = 0.0
     gt_right = 0.0
     showevery = 50
+    calc_per_class_acc = True
+
+    predicted_correctly_ct = Counter()   # for per-class accuracy
+    occurrences_ct = Counter()   # for per-class accuracy
+
     # valset_loader
     for i, (image, semantic_anno, objpart_anno) in enumerate(
             tqdm.tqdm(loader)):
         image = Variable(image.cuda())
         objpart_logits, semantic_logits = net(image)
+        print(semantic_anno.size(), objpart_anno.size(), semantic_logits.size(), objpart_logits.size())
         print("objpart.size = {}, sem.size = {}".format(objpart_logits.size(), semantic_logits.size()))
         if i == 0:
-            num_objpart_classes = objpart_logits.size()[-1]
+            num_objpart_classes = objpart_logits.size()[1]
+            num_semantic_classes = semantic_logits.size()[1]
+            print(num_objpart_classes, num_semantic_classes)
         
         print("[#] DEBUG: train.py, validate()")
 
         # First we do argmax on gpu and then transfer it to cpu
         sem_pred_np, sem_anno_np = numpyify_logits_and_annotations(
             semantic_logits, semantic_anno)
-        # objpart_pred_np, objpart_anno_np = numpyify_logits_and_annotations(
-        #     objpart_logits, objpart_anno)
-        if compression_method == 'none':     # GILAD
 
+        if calc_per_class_acc:
+            objpart_pred_np_nc, objpart_anno_np_nc = numpyify_logits_and_annotations(
+                    objpart_logits, objpart_anno)  
+
+        if compression_method == 'none':     # GILAD
+            print("compression method = {}".format(compression_method))
             objpart_pred_np, objpart_anno_np = numpyify_logits_and_annotations(
                     objpart_logits, objpart_anno)
-        # elif merge_level == '61-way':
-        #     objpart_pred_np, objpart_anno_np = outputs_tonp_gt(
-        #         objpart_logits, objpart_anno, net.flat_map)
         else:
             objpart_pred_np, objpart_anno_np = outputs_tonp_gt(
-                objpart_logits, objpart_anno, net.flat_map)
+                objpart_logits, objpart_anno, net.flat_map,
+                compression_method, semseg_logits=semantic_logits,
+                compress=compress, force_binary=force_binary,
+                class_to_compress_by=class_to_compress_by)
 
         print("objpart_pred_np = {}, objpart_anno_np = {}".format(objpart_pred_np,
                 objpart_anno_np))
@@ -399,6 +478,7 @@ def validate(net, loader, labels, compression_method):
         # opannononz = np.array([el for el in objpart_anno_np if el > -2])
         # print("opprednonz = {}, opannononz = {}".format(opprednonz, opannononz))
         # gt_right += np.sum((opprednonz == opannononz))
+        
         gt_right += np.sum(objpart_pred_np == objpart_anno_np)
         gt_total += np.sum(objpart_anno_np != -2)	# TBC (-2 --> mask_out value)
         print("gt_right = {}, get_total = {}".format(gt_right, gt_total))
@@ -406,6 +486,16 @@ def validate(net, loader, labels, compression_method):
 	print("correct idxs = {}".format(correct_idxs))
         print("pred[correct_idxs] = {}, annot[correct_idxs] = {}".format(
                 objpart_pred_np[correct_idxs], objpart_anno_np[correct_idxs]))
+
+        print("objpart_anno_np_nc[correct_idxs], objpart_anno_np[correct_idxs]")
+        print(objpart_anno_np_nc[correct_idxs], objpart_anno_np[correct_idxs])
+        # raise NotImplementedError()
+        if calc_per_class_acc:
+            predicted_correctly_ct += Counter(objpart_anno_np_nc[correct_idxs])   # for per class accuracy calc
+            occurrences_ct += Counter(objpart_anno_np_nc[objpart_anno_np != -2])  # for per class accuracy calc
+            print("per class counters")
+            print(predicted_correctly_ct, occurrences_ct)
+
         current_semantic_confusion_matrix = confusion_matrix(
             y_true=sem_anno_np, y_pred=sem_pred_np, labels=semantic_labels)
 
@@ -452,6 +542,32 @@ def validate(net, loader, labels, compression_method):
     objpart_mIoU = np.mean([objpart_IoU[i] for i,
                             _ in enumerate(objpart_IoU) if i not in no_parts])
     overall_objpart_accuracy = gt_right / gt_total
+    if calc_per_class_acc:
+        class_accs = dict() # list()
+        for cls in range(1, num_semantic_classes):
+            channels_indices = [cls, cls + 20]    # TBC - hardcoded values
+            if num_objpart_classes == 61:
+                channels_indices.append(cls + 40)
+            # What if we have a class that doesn't occur?
+            # What about classes with 0 correct prediction but that does apper in annotations?
+            # OK, if dosn't appear in predicted_correctly_ct will be count as 0
+            correct_pred = sum([predicted_correctly_ct[ch] for ch in channels_indices if ch in predicted_correctly_ct])
+            total_pred = sum([occurrences_ct[ch] for ch in channels_indices if ch in occurrences_ct])
+            print("cls {}, correct_pred = {}, total_pred = {}".format(cls, correct_pred, total_pred))
+            if total_pred != 0:
+                class_accs[cls] = float(correct_pred) / total_pred
+    
+        print(class_accs)
+        correct_debug, total_debug = sum(predicted_correctly_ct.values()), sum(occurrences_ct.values())
+        print("debug per class accuracy, debug acc = {}, acc = {}".format(correct_debug / float(total_debug),
+            overall_objpart_accuracy))
+        with open(os.path.join(results_dir_path, 'per_class_acc'), 'w') as f:
+            json.dump(class_accs, f)
+        
+    with open(os.path.join(results_dir_path, 'summary'), 'w') as f: 
+        f.write("objpart mIoU = {}\nsemantic mIoU = {}\n".format(objpart_mIoU, semantic_mIoU) +
+            "overall objpart accuracy = {}".format(overall_objpart_accuracy))
+
     net.train()
     return objpart_mIoU, semantic_mIoU, overall_objpart_accuracy
 
@@ -466,7 +582,7 @@ def train(train_params):
     trainloader = train_params['trainloader']
     # trainset = train_params['trainset']
     # batch_size = train_params['batch_size']
-    valset_loader = train_params['valset_loader']
+    # valset_loader = train_params['valset_loader']
     init_lr = train_params['init_lr']
     writer = train_params['writer']
     validate_batch_frequency = train_params['validate_batch_frequency']
@@ -490,6 +606,8 @@ def train(train_params):
     compression_method = train_params['compression_method']
     dump_output_images = train_params['dump_output_images']
     print("dump_output_images = {}".format(dump_output_images))
+    spatial_average = train_params['spatial_average']
+    validate_params = train_params['validate_params']
 
     # could try to learn these as parameters...
     # currently not implemented
@@ -500,7 +618,6 @@ def train(train_params):
     objpart_labels = range(number_of_objpart_classes)   # GILAD
     semantic_labels = range(number_of_semantic_classes)
 
-    spatial_average = False  # True
     batch_average = True
 
     # loop over the dataset multiple times
@@ -549,6 +666,7 @@ def train(train_params):
             # tf.gather_nd()
             semantic_anno_flatten_valid, semantic_index = get_valid_annos(
                 semantic_anno, 255)
+
             op_anno_flt_vld, objpart_index = get_valid_annos(
                 objpart_anno, -2)
 
@@ -646,7 +764,7 @@ def train(train_params):
             # Score the overall accuracy
             # prepend _ to avoid interference with the training
     
-            if merge_level == 'binary' or merge_level == 'trinary':
+            if compression_method == 'none':
                 _op_log_flt_vld = op_log_flt_vld
                 _op_anno_flt_vld = op_anno_flt_vld
             # elif merge_level == '61-way':
@@ -654,12 +772,12 @@ def train(train_params):
             #         op_log_flt_vld, op_anno_flt_vld, net.flat_map)
             else:
                 semantic_logits_to_compression = None
-                if compression_method == 'predicted_label':
+                if compression_method == 'use_semseg_prediction':
                     semantic_logits_to_compression = semantic_logits_flatten_valid.data.index_select(0,
                         objpart_mask_for_loss)   # is it right to use .data ?
                 _op_log_flt_vld, _op_anno_flt_vld = compress_objpart_logits(
                     op_log_flt_vld, op_anno_flt_vld, net.flat_map,
-                    method=compression_method,
+                    method=compression_method,    # HERE - edit compress_objpart_logits to fit the new methods
                     semseg_logits=semantic_logits_to_compression)
 
             if len(_op_log_flt_vld) > 0:
@@ -685,6 +803,9 @@ def train(train_params):
                 else:
                     _, logits_toscore = torch.max(_op_log_flt_vld, dim=1)
                     _ind_ = torch.gt(_op_anno_flt_vld, 0)   # why is this? if we don't compress, 0 is the bg, don't use it
+                    with open('none_compression_zeros_debug', 'a+') as f:
+                        f.write("epoch = {} : {}\n".format(epoch, torch.sum(_op_anno_flt_vld == 0).float().data[0]))
+
                     op_pred_gz = logits_toscore[_ind_]
                     _op_anno_gz = _op_anno_flt_vld[_ind_]
                     print("!! (op_pred_gz == _op_anno_gz).sum().data[0] = {}".format(torch.sum(op_pred_gz == _op_anno_gz).data[0]))
@@ -718,9 +839,13 @@ def train(train_params):
 
             # import pdb; pdb.set_trace()
             if spatial_average:
-                semantic_loss /= sem_scale
-                objpart_loss /= op_scale
-
+                print("spatial agerage")
+                print(sem_scale, op_scale)
+                print(type(sem_scale), type(op_scale))
+                semantic_loss = semantic_loss / sem_scale
+                objpart_loss = objpart_loss / op_scale
+                # semantic_loss = torch.div(semantic_loss, sem_scale)
+                # objpart_loss = torch.div(objpart_loss, op_scale)
             # tqdm.tqdm.write("oploss, semloss:\t({}, {}) - {} - {:%}".format(
             # objpart_loss.data[0], semantic_loss.data[0], len(_ind_),
             # correct_points/num_points))
@@ -823,8 +948,7 @@ def train(train_params):
         # Validate and save if best model
         (curr_op_valscore,
          curr_sem_valscore,
-         curr_op_gt_valscore) = validate(
-             net, valset_loader, (objpart_labels, semantic_labels), compression_method)
+         curr_op_gt_valscore) = validate(net, validate_params)
         writer.add_scalar('validation/semantic_validation_mIoU',
                           curr_sem_valscore, epoch)
         writer.add_scalar('validation/objpart_validation_mIoU',
@@ -835,7 +959,7 @@ def train(train_params):
         # visualize
         # TODO: move this call to the validate() function
         if dump_output_images:
-            validate_and_output_images(net, valset_loader, net.flat_map,
+            validate_and_output_images(net, validate_params['valset_loader'], net.flat_map,
                     which=which_vis_type, alpha=0.7, writer=writer, step_num=epoch + 1,
                     save_name=save_model_name)
 
@@ -942,8 +1066,16 @@ if __name__ == "__main__":
     parser.add_argument('-cm', '--compression-method', default="gt",
         help="compression method for compressing 41/61-way objpart logits into 2/3-way," \
              "for the purpose of evaluation")
+    parser.add_argument('-cc', '--class-to-compress-by', default=None,
+        help="class to compress by when choosing compression method 'by_given_class'")
     parser.add_argument('-di', '--dump-output-images', action='store_true',
         help="dump output images")
+    parser.add_argument('-sa', '--spatial-average', action='store_true',
+        help="spatial average of loss")
+    parser.add_argument('-co', '--compress', action='store_true',
+        help="compress 41-way --> 2-way, 61-way --> 3-way in evaluation")
+    parser.add_argument('-fb', '--force-binary', action='store_true',
+        help="force 2-way / 41-way objpart output (not considering unambiguous channels)")
     
     argvals = parser.parse_args()
     main(argvals)

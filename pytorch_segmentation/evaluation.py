@@ -233,14 +233,16 @@ def numpyify_logits_and_annotations(logits, anno, flatten=True):
     return prediction_np, anno_np
 
 
-def outputs_tonp_gt(logits, anno, op_map, flatten=True):
+def outputs_tonp_gt(logits, anno, op_map, compression_method='max_of_all', semseg_logits=None, compress=False,
+    flatten=True, force_binary=False, class_to_compress_by=None):
     ''' process logits and annotations for input into
     confusion matrix function.
 
     args::
         ``logits``: network predictoins
         ``anno``: ground truth annotations
-
+        ``force_binary``: force 61-way to predict a label out of the 41-way objpart (unambiguous channels)
+         ``compress``: boolean indicating whether to compress 41/61-way into 2/3-way
     returns::
         flattened predictions, flattened annotations
     '''
@@ -277,27 +279,156 @@ def outputs_tonp_gt(logits, anno, op_map, flatten=True):
 
         return triple
 
+    def get_channels_of_cls(cls):
+        return [cls, cls + 20, cls + 40]
+
+    # *** params ***
+    compressed_object_val = 0
+    compressed_part_val = 1
+    compressed_ambiguous_val = 2
+    object_max_ch, part_max_ch, ambiguous_max_ch = 20, 40, 60
+    bg_pred_ctr = 0
+    amb_pred_ctr = 0
+    compress_annos = compress
+    compress_predictions = compress
+
     _logits = logits.data.cpu()
     anno_np = anno.numpy()
     predictions = np.zeros_like(anno_np)
+    if compression_method == 'use_semseg_prediction':
+        _, semseg_predictions = torch.max(semseg_logits, dim=1)
+        # semseg_predictions = semseg_predictions.cpu().data.numpy()
     num_classes = logits.size()[1]
+    if num_classes == 41:
+        force_binary = True
+
     print("[outputs_tonp_gt] num_classes = {}".format(num_classes))
     print("[outputs_tonp_gt] logits.size = {}".format(logits.size()))
+
     # for index, anno_ind in np.ndenumerate(anno_np):
     for index in zip(*np.where(np.logical_and(anno_np > 0, anno_np != 255))):
         anno_ind = anno_np[index]
         batch_ind = index[0]
         i = index[1]
         j = index[2]
-        if num_classes == 61:
-            channel_indices = to_triple(anno_ind, op_map)  # num_to_aggregate)
+        
+        if compression_method == 'gt':
+            if num_classes == 61:
+                channel_indices = to_triple(anno_ind, op_map)  # num_to_aggregate)
+            else:
+                channel_indices = to_pair(anno_ind, op_map)  # num_to_aggregate)
+
+            if force_binary:
+                # print('*' * 50 + ' gt, force binary')
+                # print(channel_indices, [ci for ci in channel_indices if ci <= part_max_ch])
+                aided_prediction = channel_indices[np.argmax(
+                    [_logits[batch_ind, ci, i, j] for ci in channel_indices if ci <= part_max_ch])]
+            else:
+                aided_prediction = channel_indices[np.argmax(
+                    [_logits[batch_ind, ci, i, j] for ci in channel_indices])]
+
+        elif compression_method == 'max_of_all':
+            if force_binary:
+                channel_indices = range(min(num_classes, part_max_ch + 1))
+                print('*' * 50 + ' force_binary, channel_indices')
+                print(channel_indices)
+            else:
+                channel_indices = range(num_classes)
+            channel_indices.remove(0)
+
+            # print("*" * 50 + "max of all")
+            aided_prediction = channel_indices[np.argmax(
+                [_logits[batch_ind, ci, i, j] for ci in channel_indices])]  # Not good, need to +1?
+            # print(_logits[batch_ind, :, i, j], aided_prediction)
+            # amax = np.argmax(_logits[batch_ind, :, i, j].numpy())
+            # print(amax)
+            # raise NotImplementedError()
+
+        elif compression_method == 'use_semseg_prediction':
+            # what if the prediction is background? use other method for this point
+            semseg_ind = semseg_predictions[index].data[0]
+            # print('&' * 30,'semseg_prediction', type(semseg_ind), semseg_ind)
+            if semseg_ind == 0:
+                with open("compression_bg_debug", 'w') as f:
+                    f.write("{}".format(bg_pred_ctr))
+                    bg_pred_ctr += 1
+                    semseg_ind = anno_np[index]   # TMP
+
+            if num_classes == 61:
+                channel_indices = to_triple(semseg_ind, op_map)  # num_to_aggregate)
+            else:
+                channel_indices = to_pair(semseg_ind, op_map)  # num_to_aggregate)
+
+            if force_binary:
+                # print('*' * 50 + ' use_semseg_pred, force binary')
+                # print(channel_indices, [ci for ci in channel_indices if ci <= part_max_ch])
+                
+                aided_prediction = channel_indices[np.argmax(
+                    [_logits[batch_ind, ci, i, j] for ci in channel_indices if ci <= part_max_ch])]
+            else:
+                aided_prediction = channel_indices[np.argmax(
+                   [_logits[batch_ind, ci, i, j] for ci in channel_indices])]
+
+            
+        elif compression_method == 'sum':
+            compress = False
+            compress_annos = True
+            # sum all object channels, part channels, ambiguous channels (optional)
+            ambiguous_score = -float('inf')
+
+            channels = _logits[batch_ind, :, i, j].numpy()
+            # print(channels.shape, channels)
+
+            cum_sum = channels.cumsum()
+            # print(cum_sum)
+
+            object_score = cum_sum[object_max_ch]
+            part_score = cum_sum[part_max_ch]
+            if num_classes == 61 and not force_binary:
+                ambiguous_score = cum_sum[ambiguous_max_ch]
+                ambiguous_score = ambiguous_socre - part_score
+            part_score = part_score - object_score
+            object_score = object_score - channels[0]    # subtract bg
+
+	    aided_prediction = np.argmax(np.array([object_score, part_score, ambiguous_score]))
+            print("*" * 50 + " sum, aided pred = {}".format(aided_prediction))
+            # print(object_score, part_score, aided_prediction)
+            # raise NotImplementedError()
+
+        elif compression_method == 'by_given_class':
+            if not class_to_compress_by:
+                raise TypeError("No class to compress by was specified")
+            channel_indices = get_channels_of_cls(class_to_compress_by)
+            print(class_to_compress_by, channel_indices)
+
+            if force_binary:
+                aided_prediction = channel_indices[np.argmax(
+                    [_logits[batch_ind, ci, i, j] for ci in channel_indices if ci <= part_max_ch])]
+            else:
+                aided_prediction = channel_indices[np.argmax(
+                    [_logits[batch_ind, ci, i, j] for ci in channel_indices])]
         else:
-            channel_indices = to_pair(anno_ind, op_map)  # num_to_aggregate)
+            raise NotImplementedError("{} compression method is not implemented".format(
+                compression_method))
 
-        aided_prediction = channel_indices[np.argmax(
-            [_logits[batch_ind, ci, i, j] for ci in channel_indices])]
+        if compress_predictions: 
+            predictions[batch_ind, i, j] = compressed_object_val if aided_prediction <= object_max_ch \
+                else compressed_part_val if aided_prediction <= part_max_ch \
+                    else compressed_ambiguous_val
+            # print("*" * 50 + " compress, pred = {}".format(predictions[batch_ind, i, j])) 
+        else:
+            predictions[batch_ind, i, j] = aided_prediction
+            if aided_prediction > part_max_ch:
+                with open('ambiguous_prediction_debug', 'w') as f:
+                    f.write('{}'.format(amb_pred_ctr))
+                    amb_pred_ctr += 1
 
-        predictions[batch_ind, i, j] = aided_prediction
+    # outside of the loop - compress anno_np
+    if compress_annos:
+        anno_np[np.logical_and(anno_np > 0, anno_np <= object_max_ch)] = compressed_object_val
+        anno_np[np.logical_and(anno_np > object_max_ch, anno_np <= part_max_ch)] = compressed_part_val
+        anno_np[np.logical_and(anno_np > part_max_ch, anno_np <= ambiguous_max_ch)] = compressed_ambiguous_val
+        print('*' * 50 + 'compress anno, truth = {}'.format(np.any(anno_np == 2)))
     if flatten:
         return predictions.flatten(), anno_np.flatten()
     return predictions, anno_np
@@ -351,6 +482,7 @@ def outputs_tonp_gt_61_way(logits, anno, op_map, flatten=True):
         return predictions.flatten(), anno_np.flatten()
     return predictions, anno_np
 
+
 # check
 def compress_objpart_logits(logits, anno, op_map, method="gt", semseg_logits=None):
     ''' Reduce N x 41 tensor ``logits`` to an N x 2 tensor ``compressed``,
@@ -363,7 +495,7 @@ def compress_objpart_logits(logits, anno, op_map, method="gt", semseg_logits=Non
     returns::
         compressed tensor of shape (N, 2)
     '''
-    if method == 'none':
+    if method == 'none' or method == 'max_of_all':
         return logits, anno
 
     anno = anno.data.cpu()
@@ -457,7 +589,7 @@ def compress_objpart_logits(logits, anno, op_map, method="gt", semseg_logits=Non
             compressed_logits[:, 1] = compressed_logits[:, 1] - compressed_logits[:, 0]
             compressed_logits[:, 0] = compressed_logits[:, 0] - logits[:, 0]   # subtract bg
 
-    elif method == "predicted_label":
+    elif method == "use_semseg_prediction":
         if logits.size()[0] != semseg_logits.size()[0]:
             with open('compress_logits_sizes_debug', 'a+') as f:
                 f.write("logits size = {}, semseg_pred size = {}\n".format(logits.size()[0],
